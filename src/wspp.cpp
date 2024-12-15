@@ -758,12 +758,10 @@ namespace wspp {
                     return false;
                 }
 
-                for(const auto &item : headers) {
-                    printf("%s: %s\n", item.first.c_str(), item.second.c_str());
-                }
+                // for(const auto &item : headers) {
+                //     printf("%s: %s\n", item.first.c_str(), item.second.c_str());
+                // }
             }
-
-
         }
 
         return true;
@@ -1238,13 +1236,12 @@ namespace wspp {
             return false;
         }
 
-        uint64_t payload_len = 0;
+        uint64_t payloadLength = 0;
 
         // Parse the payload length
-        {
-            // TODO: do we need to reverse the bytes on a machine with a different endianess than x86?
-            uint8_t len = PAYLOAD_LEN(header);
-            switch (len) {
+        // TODO: do we need to reverse the bytes on a machine with a different endianess than x86?
+        uint8_t len = PAYLOAD_LEN(header);
+        switch (len) {
             case 126: {
                 uint8_t ext_len[2] = {0};
                 if (read(&ext_len, sizeof(ext_len)) <= 0) {
@@ -1253,7 +1250,7 @@ namespace wspp {
                 }
 
                 for (size_t i = 0; i < sizeof(ext_len); ++i) {
-                    payload_len = (payload_len << 8) | ext_len[i];
+                    payloadLength = (payloadLength << 8) | ext_len[i];
                 }
             }
             break;
@@ -1265,13 +1262,12 @@ namespace wspp {
                 }
 
                 for (size_t i = 0; i < sizeof(ext_len); ++i) {
-                    payload_len = (payload_len << 8) | ext_len[i];
+                    payloadLength = (payloadLength << 8) | ext_len[i];
                 }
             }
             break;
             default:
-                payload_len = len;
-            }
+                payloadLength = len;
         }
 
         // Read the mask
@@ -1287,39 +1283,37 @@ namespace wspp {
         }
 
         // Read the payload
-        {
-            frame->fin = FIN(header);
-            frame->opcode = OPCODE(header);
-            frame->payloadLength = payload_len;
+        frame->fin = FIN(header);
+        frame->opcode = OPCODE(header);
+        frame->payloadLength = payloadLength;
 
-            if (frame->payloadLength > 0) {
-                frame->payload = new uint8_t[payload_len];
-                if (frame->payload == nullptr) {
-                    printf("Failed to allocate memory for payload\n");
-                    return false;
-                }
-                memset(frame->payload, 0, payload_len);
+        if (frame->payloadLength > 0) {
+            frame->payload = new uint8_t[payloadLength];
+            if (frame->payload == nullptr) {
+                printf("Failed to allocate memory for payload\n");
+                return false;
+            }
+            memset(frame->payload, 0, payloadLength);
 
-                // TODO: cws_read_frame does not handle when cws->read didn't read the whole payload
-                if (read(frame->payload, frame->payloadLength) <= 0) {
+            // TODO: cws_read_frame does not handle when cws->read didn't read the whole payload
+            if (read(frame->payload, frame->payloadLength) <= 0) {
+                delete[] frame->payload;
+                frame->payload = nullptr;
+                printf("Failed to read payload\n");
+                return false;
+            }
+
+            if(masked) {
+                for(size_t i = 0; i < frame->payloadLength; i++)
+                    frame->payload[i] = frame->payload[i] ^ mask[i % 4];
+            }
+
+            if(frame->opcode == 0x1) {
+                if(!isValidUTF8(frame->payload, frame->payloadLength)) {
                     delete[] frame->payload;
                     frame->payload = nullptr;
-                    printf("Failed to read payload\n");
+                    printf("Detected invalid UTF-8\n");
                     return false;
-                }
-
-                if(masked) {
-                    for(size_t i = 0; i < frame->payloadLength; i++)
-                        frame->payload[i] = frame->payload[i] ^ mask[i % 4];
-                }
-
-                if(frame->opcode == 0x1) {
-                    if(!isValidUTF8(frame->payload, frame->payloadLength)) {
-                        delete[] frame->payload;
-                        frame->payload = nullptr;
-                        printf("Detected invalid UTF-8\n");
-                        return false;
-                    }
                 }
             }
         }
@@ -1392,22 +1386,11 @@ namespace wspp {
     }
 
     bool WebSocket::verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey) {
-        auto computeAcceptKey = [] (const std::string& key) -> std::string {
-            // Concatenate the key with the magic string
-            std::string magicString = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-            // Compute SHA-1 hash
-            unsigned char hash[SHA_DIGEST_LENGTH];
-            SHA1(reinterpret_cast<const unsigned char*>(magicString.c_str()), magicString.size(), hash);
-            // Base64 encode the hash
-            return base64Encode(hash, SHA_DIGEST_LENGTH);
-        };
-
-        std::string expectedAcceptKey = computeAcceptKey(originalKey);
+        std::string expectedAcceptKey = generateAcceptKey(originalKey);
         return receivedAcceptKey == expectedAcceptKey;
     }
 
     bool WebSocket::resolve(const std::string &uri, std::string &ip, uint16_t &port, std::string &hostname) {
-        // Check if the URI starts with "wss://" or "ws://"
         enum class Mode {
             Insecure,
             Secure,
@@ -1417,6 +1400,7 @@ namespace wspp {
         Mode mode = Mode::Invalid;
         size_t protocolLength = 6;
 
+        // Check if the URI starts with "wss://" or "ws://"
         if (uri.substr(0, 6) == "wss://") {
             mode = Mode::Secure;
             protocolLength = 6;
@@ -1452,26 +1436,21 @@ namespace wspp {
             return false;
         }
 
-        // Print the resolved IP addresses
-        //printf("Resolved IP addresses for %s\n", host.c_str());
         hostname = host;
 
         for (struct addrinfo* p = res; p != nullptr; p = p->ai_next) {
             void* addr;
-            std::string ipver;
 
             // Get the pointer to the address itself
             if (p->ai_family == AF_INET) { // IPv4
                 struct sockaddr_in* ipv4 = (struct sockaddr_in*)p->ai_addr;
                 addr = &(ipv4->sin_addr);
-                ipver = "IPv4";
             } else { // IPv6
                 struct sockaddr_in6* ipv6 = (struct sockaddr_in6*)p->ai_addr;
                 addr = &(ipv6->sin6_addr);
-                ipver = "IPv6";
             }
 
-            // Convert the IP to a string and print it
+            // Convert the IP to a string
             char ipstr[INET6_ADDRSTRLEN];
             inet_ntop(p->ai_family, addr, ipstr, sizeof ipstr);
             ip = ipstr;
@@ -1480,11 +1459,6 @@ namespace wspp {
         freeaddrinfo(res); // Free the linked list
         return true;
     }
-
-
-
-
-
 
     URI::URI(const std::string &uriString) {
         this->uri = uriString;
