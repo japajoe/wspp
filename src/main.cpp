@@ -16,8 +16,8 @@ int runAsClient();
 int main(int argc, char **argv) {
     signal(SIGINT, &signalHandler);
 
-    return runAsServer();
-    //return runAsClient();
+    //return runAsServer();
+    return runAsClient();
 }
 
 int runAsServer() {

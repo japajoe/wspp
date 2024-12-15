@@ -1,2 +1,2 @@
 # wspp
-A websocket implementation in C++. Currently only clientside is implemented.
+A websocket implementation in C++. 
