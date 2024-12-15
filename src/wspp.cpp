@@ -287,40 +287,7 @@ namespace wspp {
 
     /////SSLCONTEXT/////
     SslContext::SslContext() {
-        this->context = SSL_CTX_new(TLS_method());
-        if(context == nullptr) {
-            throw SslException("Failed to create SSL context");
-        }
-    }
-
-    SslContext::SslContext(SSL_CTX *sslContext) {
-        this->context = sslContext;
-    }
-
-    SslContext::SslContext(const std::string &certificatePath, const std::string &privateKeyPath) {
-        context = SSL_CTX_new(TLS_server_method());
-
-        if(context == nullptr) {
-            throw SslException("Failed to create SSL context");
-        }
-        
-        if (SSL_CTX_use_certificate_file(context, certificatePath.c_str(), SSL_FILETYPE_PEM) <= 0) {
-            SSL_CTX_free(context);
-            context = nullptr;
-            throw SslException("Failed to use certificate file");
-        }
-
-        if (SSL_CTX_use_PrivateKey_file(context, privateKeyPath.c_str(), SSL_FILETYPE_PEM) <= 0) {
-            SSL_CTX_free(context);
-            context = nullptr;
-            throw SslException("Failed to use private key file");
-        }
-
-        if (!SSL_CTX_check_private_key(context)) {
-            SSL_CTX_free(context);
-            context = nullptr;
-            throw SslException("Failed to check private key");
-        }
+        context = nullptr;
     }
 
     SslContext::SslContext(const SslContext &other) {
@@ -362,11 +329,54 @@ namespace wspp {
         return SSL_CTX_check_private_key(context) == 1;
     }
 
+    bool SslContext::initialize(const char *certificatePath, const char *privateKeyPath) {
+        if(context)
+            return true;
+        
+        if(certificatePath != nullptr && privateKeyPath != nullptr) {
+            context = SSL_CTX_new(TLS_server_method());
+
+            if(context == nullptr) {
+                printf("Failed to create SSL context\n");
+                return false;
+            }
+            
+            if (SSL_CTX_use_certificate_file(context, certificatePath, SSL_FILETYPE_PEM) <= 0) {
+                SSL_CTX_free(context);
+                context = nullptr;
+                printf("Failed to use certificate file\n");
+                return false;
+            }
+
+            if (SSL_CTX_use_PrivateKey_file(context, privateKeyPath, SSL_FILETYPE_PEM) <= 0) {
+                SSL_CTX_free(context);
+                context = nullptr;
+                printf("Failed to use private key file\n");
+                return false;
+            }
+
+            if (!SSL_CTX_check_private_key(context)) {
+                SSL_CTX_free(context);
+                context = nullptr;
+                printf("Failed to check private key\n");
+                return false;
+            }
+            return true;
+        } else {
+            context = SSL_CTX_new(TLS_method());
+            if(context == nullptr) {
+                printf("Failed to create SSL context\n");
+                return false;
+            }
+            return true;
+        }
+    }
+
     SslStream::SslStream() {
         this->ssl = nullptr;
     }
 
-    SslStream::SslStream(const Socket &socket, const SslContext &sslContext) {
+    SslStream::SslStream(Socket socket, SslContext sslContext) {
         if(socket.isSet() && sslContext.getContext()) {
             ssl = SSL_new(sslContext.getContext());
 
@@ -384,7 +394,7 @@ namespace wspp {
         }
     }
 
-    SslStream::SslStream(const Socket &socket, const SslContext &sslContext, const char *hostName) {
+    SslStream::SslStream(Socket socket, SslContext sslContext, const char *hostName) {
         if(socket.isSet() && sslContext.getContext()) {
             ssl = SSL_new(sslContext.getContext());
 
@@ -476,11 +486,11 @@ namespace wspp {
 
     }
 
-    NetworkStream::NetworkStream(const Socket &socket) {
+    NetworkStream::NetworkStream(Socket socket) {
         this->socket = socket;
     }
 
-    NetworkStream::NetworkStream(const Socket &socket, const SslStream &ssl) {
+    NetworkStream::NetworkStream(Socket socket, SslStream ssl) {
         this->socket = socket;
         this->ssl = ssl;
     }
@@ -621,7 +631,7 @@ namespace wspp {
             socket.setNonBlocking();
 
         sslContext.dispose();
-        sslContext = SslContext(certificatePath, privateKeyPath);
+        sslContext.initialize(certificatePath.c_str(), privateKeyPath.c_str());
     }
 
     WebSocket::WebSocket(const WebSocket &other) {
@@ -710,6 +720,7 @@ namespace wspp {
         uri.getPath(path);
 
         if(scheme == "wss") {
+            sslContext.initialize(nullptr, nullptr);
             sslStream = SslStream(socket, sslContext, info.name.c_str());
             stream = NetworkStream(socket, sslStream);
         } else {

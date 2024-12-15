@@ -121,8 +121,6 @@ namespace wspp {
     class SslContext {
     public:
         SslContext();
-        SslContext(SSL_CTX *sslContext);
-        SslContext(const std::string &certificatePath, const std::string &privateKeyPath);
         SslContext(const SslContext &other);
         SslContext(SslContext &&other) noexcept;
         SslContext& operator=(const SslContext &other);
@@ -130,6 +128,7 @@ namespace wspp {
         void dispose();
         SSL_CTX *getContext() const;
         bool isServerContext() const;
+        bool initialize(const char *certificatePath, const char *privateKeyPath);
     private:
         SSL_CTX *context;
     };
@@ -138,9 +137,9 @@ namespace wspp {
     public:
         SslStream();
         //Used to create an SslStream for incoming connections
-        SslStream(const Socket &socket, const SslContext &sslContext);
+        SslStream(Socket socket, SslContext sslContext);
         //Used to create an SslStream for outgoing connections
-        SslStream(const Socket &socket, const SslContext &sslContext, const char *hostName);
+        SslStream(Socket socket, SslContext sslContext, const char *hostName);
         SslStream(const SslStream &other);
         SslStream(SslStream &&other) noexcept;
         SslStream& operator=(const SslStream &other);
@@ -158,8 +157,8 @@ namespace wspp {
     class NetworkStream {
     public:
         NetworkStream();
-        NetworkStream(const Socket &socket);
-        NetworkStream(const Socket &socket, const SslStream &ssl);
+        NetworkStream(Socket socket);
+        NetworkStream(Socket socket, SslStream ssl);
         NetworkStream(const NetworkStream &other);
         NetworkStream(NetworkStream &&other) noexcept;
         NetworkStream& operator=(const NetworkStream &other);
