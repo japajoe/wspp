@@ -259,7 +259,9 @@ namespace wspp {
         bool listen(int32_t backlog);
         bool accept(WebSocket &socket);
         bool setOption(int level, int option, const void *value, uint32_t valueSize);
+        void setNonBlocking();
         bool send(OpCode opcode, const void *data, size_t size, bool masked);
+        bool sendPing();
         bool receive(Message *message);
     private:
         Socket socket;

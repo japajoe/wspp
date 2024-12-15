@@ -630,7 +630,6 @@ namespace wspp {
         if(options & WebSocketOption_NonBlocking)
             socket.setNonBlocking();
 
-        sslContext.dispose();
         sslContext.initialize(certificatePath.c_str(), privateKeyPath.c_str());
     }
 
@@ -887,6 +886,10 @@ namespace wspp {
         return socket.setOption(level, option, value, valueSize);
     }
 
+    void WebSocket::setNonBlocking() {
+        socket.setNonBlocking();
+    }
+
     ssize_t WebSocket::read(void *buffer, size_t size) {
         return stream.read(buffer, size);
     }
@@ -1059,7 +1062,20 @@ namespace wspp {
         return true;
     }
 
+    bool WebSocket::sendPing() {
+        return writeFrame(OpCode_Ping, true, nullptr, 0, true);
+    }
+
     bool WebSocket::receive(Message *message) {
+
+        uint8_t peekData = 0;
+        ssize_t peekedBytes = 0;
+
+        peekedBytes = peek(&peekData, 1);
+
+        if(peekedBytes <= 0)
+            return false;
+
         auto isControl = [] (uint8_t opcode) -> bool {
             return 0x8 <= opcode && opcode <= 0xF;
         };
@@ -1081,7 +1097,9 @@ namespace wspp {
                             goto error;
                         break;
                     case OpCode_Pong:
-                        break;
+                        message->chunks = nullptr;
+                        message->opcode = OpCode_Pong;
+                        return true;
                     default: {
                         // Ignore any other control frames for now
                         break;
@@ -1143,6 +1161,7 @@ namespace wspp {
 
     bool WebSocket::writeFrame(OpCode opcode, bool fin, const void *payload, uint64_t payloadSize, bool applyMask) {
         uint8_t data = opcode;
+
         // NOTE: FIN is always set
         if (fin) {
             data |= (1 << 7);
@@ -1158,6 +1177,8 @@ namespace wspp {
             data = (1 << 7) | payloadSize;
 
             if (write(&data, sizeof(data)) <= 0) {
+
+                
                 return false;
             }
         } else if (payloadSize <= UINT16_MAX) {
@@ -1243,7 +1264,7 @@ namespace wspp {
 
         // Read the header
         if (read(header, sizeof(header)) <= 0) {
-            printf("Failed to read frame header\n");
+            //printf("Failed to read frame header\n");
             return false;
         }
 
@@ -1256,7 +1277,7 @@ namespace wspp {
             case 126: {
                 uint8_t ext_len[2] = {0};
                 if (read(&ext_len, sizeof(ext_len)) <= 0) {
-                    printf("Failed to read payload length (1)\n");
+                    //printf("Failed to read payload length (1)\n");
                     return false;
                 }
 
@@ -1268,7 +1289,7 @@ namespace wspp {
             case 127: {
                 uint8_t ext_len[8] = {0};
                 if (read(&ext_len, sizeof(ext_len)) <= 0) {
-                    printf("Failed to read payload length (2)\n");
+                    //printf("Failed to read payload length (2)\n");
                     return false;
                 }
 
@@ -1288,7 +1309,7 @@ namespace wspp {
 
         if (masked) {
             if (read(&mask, 4) <= 0) {
-                printf("Failed to read mask\n");
+                //printf("Failed to read mask\n");
                 return false;
             }
         }
@@ -1301,7 +1322,7 @@ namespace wspp {
         if (frame->payloadLength > 0) {
             frame->payload = new uint8_t[payloadLength];
             if (frame->payload == nullptr) {
-                printf("Failed to allocate memory for payload\n");
+                //printf("Failed to allocate memory for payload\n");
                 return false;
             }
             memset(frame->payload, 0, payloadLength);
@@ -1310,7 +1331,7 @@ namespace wspp {
             if (read(frame->payload, frame->payloadLength) <= 0) {
                 delete[] frame->payload;
                 frame->payload = nullptr;
-                printf("Failed to read payload\n");
+                //printf("Failed to read payload\n");
                 return false;
             }
 
@@ -1323,7 +1344,7 @@ namespace wspp {
                 if(!isValidUTF8(frame->payload, frame->payloadLength)) {
                     delete[] frame->payload;
                     frame->payload = nullptr;
-                    printf("Detected invalid UTF-8\n");
+                    //printf("Detected invalid UTF-8\n");
                     return false;
                 }
             }
