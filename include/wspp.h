@@ -93,6 +93,7 @@ namespace wspp {
         bool listen(int32_t backlog);
         bool accept(Socket &socket);
         bool setOption(int level, int option, const void *value, uint32_t valueSize);
+        void setNonBlocking();
         int32_t readByte();
         ssize_t read(void *buffer, size_t size);
         ssize_t write(const void *buffer, size_t size);
@@ -128,6 +129,7 @@ namespace wspp {
         SslContext& operator=(SslContext &&other) noexcept;
         void dispose();
         SSL_CTX *getContext() const;
+        bool isServerContext() const;
     private:
         SSL_CTX *context;
     };
@@ -235,9 +237,19 @@ namespace wspp {
 
     using Headers = std::unordered_map<std::string,std::string>;
 
+    enum WebSocketOption_ {
+        WebSocketOption_None = 0,
+        WebSocketOption_Reuse = 1 << 0,
+        WebSocketOption_NonBlocking = 1 << 1,
+    };
+
+    typedef int WebSocketOption;
+
     class WebSocket {
     public:
         WebSocket();
+        WebSocket(AddressFamily addressFamily, WebSocketOption options);
+        WebSocket(AddressFamily addressFamily, WebSocketOption options, const std::string &certificatePath, const std::string &privateKeyPath);
         WebSocket(const WebSocket &other);
         WebSocket(WebSocket &&other) noexcept;
         WebSocket& operator=(const WebSocket &other);
@@ -248,14 +260,13 @@ namespace wspp {
         bool listen(int32_t backlog);
         bool accept(WebSocket &socket);
         bool setOption(int level, int option, const void *value, uint32_t valueSize);
-        bool send(OpCode opcode, const void *data, size_t size);
+        bool send(OpCode opcode, const void *data, size_t size, bool masked);
         bool receive(Message *message);
     private:
         Socket socket;
         SslContext sslContext;
         SslStream sslStream;
         NetworkStream stream;
-        bool sendMasked;
         ssize_t read(void *buffer, size_t size);
         ssize_t write(const void *buffer, size_t size);
         ssize_t peek(void *buffer, size_t size);
@@ -268,6 +279,7 @@ namespace wspp {
         bool readFrame(Frame *frame);
         bool isValidUTF8(const void *payload, size_t size);
         std::string generateKey();
+        std::string generateAcceptKey(const std::string &websocketKey);
         bool verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey);
         bool resolve(const std::string &uri, std::string &ip, uint16_t &port, std::string &hostname);
     };

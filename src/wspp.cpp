@@ -26,6 +26,8 @@
 #include <regex>
 #include <unordered_map>
 #include <random>
+#include <thread>
+#include <fcntl.h>
 
 #ifndef SOCKET_ERROR
 #define SOCKET_ERROR (-1)
@@ -207,6 +209,18 @@ namespace wspp {
     #endif
     }
 
+    void Socket::setNonBlocking() {
+    #ifdef _WIN32
+        u_long mode = 1; // 1 to enable non-blocking socket
+        if (ioctlsocket(s.fd, FIONBIO, &mode) != 0) {
+            printf("Failed to set non-blocking mode\n");
+        }
+    #else
+        int flags = fcntl(s.fd, F_GETFL, 0);
+        fcntl(s.fd, F_SETFL, flags | O_NONBLOCK);
+    #endif
+    }
+
     int32_t Socket::readByte() {
         unsigned char b = 0;
     #ifdef _WIN32
@@ -274,6 +288,9 @@ namespace wspp {
     /////SSLCONTEXT/////
     SslContext::SslContext() {
         this->context = SSL_CTX_new(TLS_method());
+        if(context == nullptr) {
+            throw SslException("Failed to create SSL context");
+        }
     }
 
     SslContext::SslContext(SSL_CTX *sslContext) {
@@ -337,6 +354,12 @@ namespace wspp {
 
     SSL_CTX *SslContext::getContext() const {
         return context;
+    }
+
+    bool SslContext::isServerContext() const {
+        if(!context)
+            return false;
+        return SSL_CTX_check_private_key(context) == 1;
     }
 
     SslStream::SslStream() {
@@ -571,7 +594,34 @@ namespace wspp {
     }
 
     WebSocket::WebSocket() {
-        sendMasked = false;
+        socket = Socket(AddressFamily::AFInet);
+    }
+
+    WebSocket::WebSocket(AddressFamily addressFamily, WebSocketOption options) {
+        socket = Socket(addressFamily);
+
+        if(options & WebSocketOption_Reuse) {
+            int reuse = 1;
+            socket.setOption(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        }
+
+        if(options & WebSocketOption_NonBlocking)
+            socket.setNonBlocking();
+    }
+
+    WebSocket::WebSocket(AddressFamily addressFamily, WebSocketOption options, const std::string &certificatePath, const std::string &privateKeyPath) {
+        socket = Socket(addressFamily);
+
+        if(options & WebSocketOption_Reuse) {
+            int reuse = 1;
+            socket.setOption(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        }
+
+        if(options & WebSocketOption_NonBlocking)
+            socket.setNonBlocking();
+
+        sslContext.dispose();
+        sslContext = SslContext(certificatePath, privateKeyPath);
     }
 
     WebSocket::WebSocket(const WebSocket &other) {
@@ -579,7 +629,6 @@ namespace wspp {
         sslContext = other.sslContext;
         sslStream = other.sslStream;
         stream = other.stream;
-        sendMasked = other.sendMasked;
     }
 
     WebSocket::WebSocket(WebSocket &&other) noexcept {
@@ -587,7 +636,6 @@ namespace wspp {
         sslContext = std::move(other.sslContext);
         sslStream = std::move(other.sslStream);
         stream = std::move(other.stream);
-        sendMasked = std::exchange(other.sendMasked, false);
     }
 
     WebSocket& WebSocket::operator=(const WebSocket &other) {
@@ -596,7 +644,6 @@ namespace wspp {
             sslContext = other.sslContext;
             sslStream = other.sslStream;
             stream = other.stream;
-            sendMasked = other.sendMasked;
         }
         return *this;
     }
@@ -607,7 +654,6 @@ namespace wspp {
             sslContext = std::move(other.sslContext);
             sslStream = std::move(other.sslStream);
             stream = std::move(other.stream);
-            sendMasked = std::exchange(other.sendMasked, false);
         }
         return *this;
     }
@@ -625,9 +671,6 @@ namespace wspp {
     }
 
     bool WebSocket::connect(const std::string &url) {
-        if(socket.getFileDescriptor() >= 0)
-            return false;
-
         HostInfo info;
 
         std::string URL = url;
@@ -659,18 +702,19 @@ namespace wspp {
             return false;
         }
 
-        sendMasked = true;
+        URI uri(URL);
+        std::string scheme;
+        uri.getScheme(scheme);
 
-        if(info.port == 443) {
+        std::string path;
+        uri.getPath(path);
+
+        if(scheme == "wss") {
             sslStream = SslStream(socket, sslContext, info.name.c_str());
             stream = NetworkStream(socket, sslStream);
         } else {
             stream = NetworkStream(socket);
         }
-
-        URI uri(URL);
-        std::string path;
-        uri.getPath(path);
 
         std::string request;
         std::string webKey = generateKey();
@@ -713,7 +757,13 @@ namespace wspp {
                     close();
                     return false;
                 }
+
+                for(const auto &item : headers) {
+                    printf("%s: %s\n", item.first.c_str(), item.second.c_str());
+                }
             }
+
+
         }
 
         return true;
@@ -727,12 +777,13 @@ namespace wspp {
         if(!this->socket.accept(webSocket.socket))
             return false;
 
-        if(sslContext.getContext()) {
+        if(sslContext.isServerContext()) {
             try {
                 webSocket.sslStream = SslStream(webSocket.socket, sslContext);
                 webSocket.stream = NetworkStream(webSocket.socket, webSocket.sslStream);
             } catch (const SslException &ex) {
                 webSocket.close();
+                printf("Failed to create SslStream\n");
                 return false;
             }
         } else {
@@ -742,6 +793,7 @@ namespace wspp {
         std::string header;
 
         if(!readHeader(webSocket, header)) {
+            printf("Failed to read header\n");
             sendBadRequest(webSocket);
             return false;
         }
@@ -751,6 +803,7 @@ namespace wspp {
         try {
             method = readMethod(header);
         } catch (const std::invalid_argument& e) {
+            printf("Failed to read method\n");
             sendBadRequest(webSocket);
             return false;
         }
@@ -760,13 +813,65 @@ namespace wspp {
         try {
             path = readPath(header);
         } catch (const std::invalid_argument& e) {
+            printf("Failed to read path\n");
             sendBadRequest(webSocket);
             return false;
         }
-        
+
         Headers headers = readHeaderFields(header);
 
-        return false;
+        if(method != HttpMethod::GET) {
+            printf("Failed to read header fields\n");
+            sendBadRequest(webSocket);
+            return false;
+        }
+
+        const std::vector<std::string> requiredHeaders = {
+            "Upgrade", "Connection", "Sec-WebSocket-Version", "Sec-WebSocket-Key"
+        };
+
+        for (const auto &key : requiredHeaders) {
+            if (headers.count(key) == 0) {
+                printf("Failed to find required header key: %s\n", key.c_str());
+                sendBadRequest(webSocket);
+                return false;
+            }
+        }
+
+        std::string upgrade = headers["Upgrade"];
+        std::string connection = headers["Connection"];
+        std::string version = headers["Sec-WebSocket-Version"];
+        std::string webKey = headers["Sec-WebSocket-Key"];
+
+        if(upgrade != "websocket") {
+            printf("Failed to find websocket\n");
+            sendBadRequest(webSocket);
+            return false;
+        }
+
+        if(!String::contains(connection, "Upgrade")) {
+            printf("Failed to find upgrade request\n");
+            sendBadRequest(webSocket);
+            return false;
+        }
+
+        if(version != "13") {
+            printf("Version mismatch\n");
+            sendBadRequest(webSocket);
+            return false;
+        }
+
+        std::string acceptKey = generateAcceptKey(webKey);
+
+        std::string response = "HTTP/1.1 101 Switching Protocols\r\n";
+        response += "Upgrade: websocket\r\n";
+        response += "Connection: Upgrade\r\n";
+        response += "Server: Testing\r\n";
+        response += "Sec-WebSocket-Accept: " + acceptKey + "\r\n\r\n";
+
+        ssize_t sentBytes = webSocket.write(response.data(), response.size());
+        
+        return true;
     }
 
     bool WebSocket::setOption(int level, int option, const void *value, uint32_t valueSize) {
@@ -786,7 +891,7 @@ namespace wspp {
     }
 
     bool WebSocket::readHeader(WebSocket &connection, std::string &header) {
-        const size_t maxHeaderSize = 1024;
+        const size_t maxHeaderSize = 8192;
         const size_t bufferSize = maxHeaderSize;
         std::vector<char> buffer;
         buffer.resize(bufferSize);
@@ -798,15 +903,18 @@ namespace wspp {
 
         // Peek to find the end of the header
         while (true) {
-            ssize_t bytesPeeked = socket.peek(pBuffer, bufferSize);
+            ssize_t bytesPeeked = connection.peek(pBuffer, bufferSize);
 
-            totalHeaderSize += bytesPeeked;
+            if(bytesPeeked > 0)
+                totalHeaderSize += bytesPeeked;
 
             if(totalHeaderSize > maxHeaderSize) {
+                printf("Header size too big: %zu\n", totalHeaderSize);
                 return false;
             }
 
             if (bytesPeeked < 0) {
+                printf("Header peek error\n");
                 return false;
             }
 
@@ -825,17 +933,21 @@ namespace wspp {
         }
 
         if(!endFound) {
+            printf("Header end not found\n");
             return false;
         }
 
         // Now read the header
         header.resize(headerEnd);
-        ssize_t bytesRead = socket.read(&header[0], headerEnd);
+        ssize_t bytesRead = connection.read(&header[0], headerEnd);
+
         if (bytesRead < 0) {
+            printf("Failed to read header\n");
             return false;
         }
 
         if(header.size() > maxHeaderSize) {
+            printf("Header is too big: %zu\n", header.size());
             return false;
         }
 
@@ -911,7 +1023,7 @@ namespace wspp {
         webSocket.close();
     }
 
-    bool WebSocket::send(OpCode opcode, const void *payload, size_t payloadSize) {
+    bool WebSocket::send(OpCode opcode, const void *payload, size_t payloadSize, bool masked) {
         bool first = true;
         uint64_t chunkSize = 100;
         const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(payload);
@@ -926,7 +1038,7 @@ namespace wspp {
                         first ? opcode : OpCode_Control,
                         payloadSize - length == 0,
                         pPayload,
-                        length, sendMasked)) {
+                        length, masked)) {
                 return false;
             }
 
@@ -952,13 +1064,14 @@ namespace wspp {
             if (isControl(frame.opcode)) {
                 switch (frame.opcode) {
                     case OpCode_Close: {
-                        //cws->error = CWS_SERVER_CLOSE_ERROR;
                         goto error;
                     }
                     break;
                     case OpCode_Ping:
                         if(!writeFrame(OpCode_Pong, true, nullptr, 0, true))
                             goto error;
+                        break;
+                    case OpCode_Pong:
                         break;
                     default: {
                         // Ignore any other control frames for now
@@ -1005,7 +1118,7 @@ namespace wspp {
             ret = readFrame(&frame);
         }
 
-        if (ret < 0) {
+        if (!ret) {
             goto error;
         }
 
@@ -1121,7 +1234,7 @@ namespace wspp {
 
         // Read the header
         if (read(header, sizeof(header)) <= 0) {
-            //cws->error = CWS_SOCKET_ERROR;
+            printf("Failed to read frame header\n");
             return false;
         }
 
@@ -1135,7 +1248,7 @@ namespace wspp {
             case 126: {
                 uint8_t ext_len[2] = {0};
                 if (read(&ext_len, sizeof(ext_len)) <= 0) {
-                    //cws->error = CWS_SOCKET_ERROR;
+                    printf("Failed to read payload length (1)\n");
                     return false;
                 }
 
@@ -1147,7 +1260,7 @@ namespace wspp {
             case 127: {
                 uint8_t ext_len[8] = {0};
                 if (read(&ext_len, sizeof(ext_len)) <= 0) {
-                    //cws->error = CWS_SOCKET_ERROR;
+                    printf("Failed to read payload length (2)\n");
                     return false;
                 }
 
@@ -1163,15 +1276,13 @@ namespace wspp {
 
         // Read the mask
         // TODO: the server may not send masked frames
-        {
-            uint32_t mask = 0;
-            bool masked = MASK(header);
+        uint8_t mask[4] = {0};
+        bool masked = MASK(header);
 
-            if (masked) {
-                if (read(&mask, sizeof(mask)) <= 0) {
-                    //cws->error = CWS_SOCKET_ERROR;
-                    return false;
-                }
+        if (masked) {
+            if (read(&mask, 4) <= 0) {
+                printf("Failed to read mask\n");
+                return false;
             }
         }
 
@@ -1184,23 +1295,29 @@ namespace wspp {
             if (frame->payloadLength > 0) {
                 frame->payload = new uint8_t[payload_len];
                 if (frame->payload == nullptr) {
-                    //cws->error = CWS_ALLOCATOR_ERROR;
+                    printf("Failed to allocate memory for payload\n");
                     return false;
                 }
                 memset(frame->payload, 0, payload_len);
 
                 // TODO: cws_read_frame does not handle when cws->read didn't read the whole payload
                 if (read(frame->payload, frame->payloadLength) <= 0) {
-                    //cws->error = CWS_SOCKET_ERROR;
                     delete[] frame->payload;
                     frame->payload = nullptr;
+                    printf("Failed to read payload\n");
                     return false;
+                }
+
+                if(masked) {
+                    for(size_t i = 0; i < frame->payloadLength; i++)
+                        frame->payload[i] = frame->payload[i] ^ mask[i % 4];
                 }
 
                 if(frame->opcode == 0x1) {
                     if(!isValidUTF8(frame->payload, frame->payloadLength)) {
                         delete[] frame->payload;
                         frame->payload = nullptr;
+                        printf("Detected invalid UTF-8\n");
                         return false;
                     }
                 }
@@ -1260,6 +1377,18 @@ namespace wspp {
         }
 
         return base64Encode(randomBytes, 16);
+    }
+
+    std::string WebSocket::generateAcceptKey(const std::string &websocketKey) {
+        const std::string guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        std::string acceptKey = websocketKey + guid;
+
+        // Compute SHA-1 hash
+        uint8_t hash[SHA_DIGEST_LENGTH];
+        SHA1(reinterpret_cast<const unsigned char*>(acceptKey.c_str()), acceptKey.size(), hash);
+
+        // Encode the hash in Base64
+        return base64Encode(hash, SHA_DIGEST_LENGTH);
     }
 
     bool WebSocket::verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey) {
