@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
                 chunk = chunk->next;
             }
 
-            printf("%s\n\n", msg.c_str());
+            std::cout << msg << "\n\n";
 
             message.destroy();
         }
