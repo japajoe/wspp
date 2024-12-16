@@ -4,7 +4,7 @@ A websocket implementation in C++.
 # Note
 I am not following the websocket specification (RFC 6455) to the letter but feel free to let me know when you run into any issues.
 
-# Examples
+# Basic Examples
 Run as server
 ```cpp
 #include "wspp.h"
@@ -127,6 +127,142 @@ int main(int argc, char **argv) {
     }
 
     socket.close();
+
+    return 0;
+}
+```
+
+# Advanced Examples
+Run as server
+```cpp
+#include "wspp/webserver.h"
+#include <memory>
+#include <signal.h>
+#include <iostream>
+
+using namespace wspp;
+
+std::unique_ptr<WebServer> server = nullptr;
+bool runApp = true;
+
+void signalHandler(int signum) {
+    if(signum == SIGINT) {
+        if(server) {
+            server->stop();
+        }
+        runApp = false;
+    }
+}
+
+void onConnected(uint32_t clientId) {
+    std::string text = "A client has connected with ID: " + std::to_string(clientId);
+    server->broadcast(PacketType::Text, text.c_str(), text.size());
+    std::cout << text << '\n';
+}
+
+void onDisconnected(uint32_t clientId) {
+    std::string text = "A client has disconnected with ID: " + std::to_string(clientId);
+    server->broadcast(PacketType::Text, text.c_str(), text.size());
+    std::cout << text << '\n';
+}
+
+void onReceivedMessage(uint32_t clientId, Message message) {
+    if(message.opcode == OpCode::Text) {
+        std::string msg;
+        MessageChunk *chunk = message.chunks;
+
+        while(chunk != nullptr) {
+            char *payload = (char*)chunk->payload;
+            msg += std::string(payload, chunk->payloadLength);
+            chunk = chunk->next;
+        }
+
+        server->broadcast(PacketType::Text, msg.data(), msg.size());
+
+        std::cout << msg << '\n';
+    }
+}
+
+int main(int argc, char **argv) {
+    signal(SIGINT, &signalHandler);
+#ifndef _WIN32
+    signal(SIGPIPE, &signalHandler);
+#endif
+
+    Configuration configuration;
+    configuration.port = 8080;
+    configuration.maxClients = 32;
+    configuration.bindAddress = "0.0.0.0";
+
+    server = std::make_unique<WebServer>(configuration);
+    server->onConnected = onConnected;
+    server->onDisconnected = onDisconnected;
+    server->onReceived = onReceivedMessage;
+    
+    if(!server->start())
+        return 1;
+
+    while(runApp) {
+        server->update();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    return 0;
+}
+```
+
+Run as client
+```cpp
+#include <wspp/webclient.h>
+#include <memory>
+#include <signal.h>
+#include <iostream>
+
+std::unique_ptr<WebClient> client = nullptr;
+bool runApp = true;
+
+void signalHandler(int signum) {
+    if(signum == SIGINT) {
+        if(client) {
+            client->stop();
+        }
+        runApp = false;
+    }
+}
+
+void onConnected() {
+    std::cout << "Connected to server\n";
+    std::string request = R"({ "method": "subscribeNewToken" })";
+    client->send(PacketType::Text, request.c_str(), request.size());
+}
+
+void onReceived(Message message) {
+    MessageChunk *chunk = message.chunks;
+    std::string msg;
+
+    while(chunk != nullptr) {
+        char *pPayload = (char*)chunk->payload;
+        msg += std::string(pPayload, chunk->payloadLength);
+        chunk = chunk->next;
+    }
+
+    std::cout << msg << "\n\n";
+}
+
+int main(int argc, char **argv) {
+    signal(SIGINT, &signalHandler);
+
+    client = std::make_unique<WebClient>("wss://pumpportal.fun/api/data");
+    client->onConnected = onClientConnected;    
+    client->onReceived = onClientReceived;
+    
+    if(!client->start())
+        return 1;
+
+    while(runApp) {
+        client->update();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 
     return 0;
 }
