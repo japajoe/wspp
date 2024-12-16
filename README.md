@@ -2,7 +2,7 @@
 A websocket implementation in C++. 
 
 # Note
-I am not following the websocket specification (RFC 6455) to the letter but I think this library covers the basics for now.
+I am not following the websocket specification (RFC 6455) to the letter but feel free to let me know when you run into any issues.
 
 # Examples
 Run as server
@@ -25,6 +25,7 @@ int main(int argc, char **argv) {
     signal(SIGINT, &signalHandler);
 #ifndef _WIN32
     //Windows does not have this signal (it is fired when a socket is suddenly disconnected).
+    //In order to prevent the server from shutting down we intercept this signal and ignore it.
     signal(SIGPIPE, &signalHandler);
 #endif
 
@@ -95,10 +96,6 @@ void signalHandler(int signum) {
 
 int main(int argc, char **argv) {
     signal(SIGINT, &signalHandler);
-#ifndef _WIN32
-    //Windows does not have this signal (it is fired when a socket is suddenly disconnected).
-    signal(SIGPIPE, &signalHandler);
-#endif
 
     WebSocket socket(AddressFamily::AFInet, WebSocketOption_Reuse);
 
