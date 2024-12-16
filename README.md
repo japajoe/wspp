@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    printf("Server is listening on port %zu\n", port);
+    std::cout << "Server is listening on port " << port << '\n';
 
     while(runApp) {
         WebSocket client;
