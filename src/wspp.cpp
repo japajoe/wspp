@@ -450,8 +450,8 @@ namespace wspp {
         if(ssl) {
             int bytesRead = SSL_read(ssl, buffer, size);
             if(bytesRead <= 0) {
-                int errorCode = SSL_get_error(ssl, bytesRead);
-                printf("SSL_read error code: %d\n", errorCode);
+                //int errorCode = SSL_get_error(ssl, bytesRead);
+                //printf("SSL_read error code: %d\n", errorCode);
             }
             return bytesRead;
         }
@@ -1428,11 +1428,9 @@ namespace wspp {
         const std::string guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         std::string acceptKey = websocketKey + guid;
 
-        // Compute SHA-1 hash
         uint8_t hash[SHA_DIGEST_LENGTH];
         SHA1(reinterpret_cast<const unsigned char*>(acceptKey.c_str()), acceptKey.size(), hash);
 
-        // Encode the hash in Base64
         return base64Encode(hash, SHA_DIGEST_LENGTH);
     }
 
@@ -1442,37 +1440,44 @@ namespace wspp {
     }
 
     bool WebSocket::resolve(const std::string &uri, std::string &ip, uint16_t &port, std::string &hostname) {
-        enum class Mode {
-            Insecure,
-            Secure,
-            Invalid
-        };
+        std::string scheme, host, path;
+        URI u(uri);
 
-        Mode mode = Mode::Invalid;
-        size_t protocolLength = 6;
-
-        // Check if the URI starts with "wss://" or "ws://"
-        if (uri.substr(0, 6) == "wss://") {
-            mode = Mode::Secure;
-            protocolLength = 6;
-        } else if(uri.substr(0, 5) == "ws://") {
-            mode = Mode::Insecure;
-            protocolLength = 5;
-        } else {
-            printf("Invalid URI: %s\n", uri.c_str());
+        if(!u.getScheme(scheme)) {
+            printf("Failed to get scheme from URI\n");
             return false;
         }
 
-        // Extract the hostname and path
-        std::string::size_type pos = uri.find('/', protocolLength); // Find the first '/' after "wss://"
-        std::string host = uri.substr(protocolLength, pos - protocolLength); // Extract the hostname
-        std::string path = uri.substr(pos); // Extract the path
+        if(!u.getHost(host)) {
+            printf("Failed to get host from URI\n");
+            return false;
+        }
 
-        // Default port for wss
-        if(mode == Mode::Secure)
-            port = 443;
-        else
-            port = 80;
+        if(!u.getPath(path)) {
+            printf("Failed to get path from URI");
+            return false;
+        }
+
+        if(String::contains(host, ":")) {
+            auto parts = String::split(host, ":");
+            
+            if(parts.size() != 2)
+                return false;
+            
+            //Get rid of the :port part in the host
+            host = parts[0];
+
+            if(!String::parseNumber(parts[1], port))
+                return false;
+        } else {
+            if(scheme == "wss") {
+                port = 443;
+            } else if(scheme == "ws") {
+                port = 80;
+            } else {
+                return false;
+            }
+        }
 
         // Resolve the hostname to an IP address
         struct addrinfo hints, *res;
@@ -1644,5 +1649,49 @@ namespace wspp {
         substrings.push_back(s.substr(start));
 
         return substrings;
+    }
+
+    Timer::Timer() {
+        tp1 = std::chrono::system_clock::now();
+        tp1 = std::chrono::system_clock::now();
+        deltaTime = 0;
+    }
+
+    Timer::Timer(const Timer &other) {
+        tp1 = other.tp1;
+        tp2 = other.tp2;
+        deltaTime = other.deltaTime;
+    }
+
+    Timer::Timer(Timer &&other) noexcept {
+        tp1 = other.tp1;
+        tp2 = other.tp2;
+        deltaTime = other.deltaTime;
+    }
+
+    Timer &Timer::operator=(const Timer &other) {
+        if(this != &other) {
+            tp1 = other.tp1;
+            tp2 = other.tp2;
+            deltaTime = other.deltaTime;
+        }
+        return *this;
+    }
+
+    Timer &Timer::operator=(Timer &&other) noexcept {
+        if(this != &other) {
+            tp1 = other.tp1;
+            tp2 = other.tp2;
+            deltaTime = other.deltaTime;
+        }
+        return *this;
+    }
+
+    void Timer::update() {
+        tp2 = std::chrono::system_clock::now();
+        std::chrono::duration<float> elapsed = tp2 - tp1;
+        tp1 = tp2;
+        deltaTime = elapsed.count();
+        elapsedTime += deltaTime;
     }
 }

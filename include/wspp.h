@@ -22,8 +22,8 @@
 
 // Special thanks to https://github.com/tsoding/cws for reference
 
-#ifndef WSPP_HPP
-#define WSPP_HPP
+#ifndef WSPP_WSPP_HPP
+#define WSPP_WSPP_HPP
 
 #include <string>
 #include <cstdint>
@@ -32,6 +32,10 @@
 #include <vector>
 #include <exception>
 #include <unordered_map>
+#include <sstream>
+#include <atomic>
+#include <thread>
+#include <chrono>
 
 #ifdef _WIN32
 #ifdef _WIN32_WINNT
@@ -174,6 +178,11 @@ namespace wspp {
         SslStream ssl;
     };
 
+    enum class PacketType {
+        Binary,
+        Text
+    };
+
     enum class OpCode : uint8_t {
         Control = 0x0,
         Text = 0x1,
@@ -314,6 +323,164 @@ namespace wspp {
         static std::string toLower(const std::string &s);
         static std::string toUpper(const std::string &s);
         static std::vector<std::string> split(const std::string &s, const std::string &separator);
+        template <typename T>
+        static bool parseNumber(const std::string& str, T& number) {
+            static_assert(std::is_arithmetic<T>::value, "T must be a numeric type");
+            std::istringstream iss(str);
+            iss >> number;
+            return !iss.fail() && iss.eof();
+        }
+    };
+
+    template <typename T>
+    class ConcurrentQueue {
+    public:
+        ConcurrentQueue() {
+            _consumerCursor = 0;
+            _producerCursor = 0;
+            size_t capacity = 1024;
+            capacity = nextPowerOfTwo(capacity);
+            _modMask = capacity - 1;
+            _entries.resize(capacity);
+        }
+
+        ConcurrentQueue(size_t capacity) {
+            _consumerCursor = 0;
+            _producerCursor = 0;
+            capacity = nextPowerOfTwo(capacity);
+            _modMask = capacity - 1;
+            _entries.resize(capacity);
+        }
+
+        ConcurrentQueue(const ConcurrentQueue &other) {
+            _entries = other._entries;
+            _modMask = other._modMask;
+            _consumerCursor = other._consumerCursor;
+            _producerCursor = other._producerCursor;
+        }
+
+        ConcurrentQueue(ConcurrentQueue &&other) noexcept {
+            _entries = std::move(other._entries);
+            _modMask = other._modMask;
+            _consumerCursor = other._consumerCursor;
+            _producerCursor = other._producerCursor;
+        }
+
+        ConcurrentQueue& operator=(const ConcurrentQueue &other) {
+            if(this != &other) {
+                _entries = other._entries;
+                _modMask = other._modMask;
+                _consumerCursor = other._consumerCursor;
+                _producerCursor = other._producerCursor;
+            }
+            return *this;
+        }
+
+        ConcurrentQueue& operator=(ConcurrentQueue &&other) noexcept {
+            if(this != &other) {
+                _entries = std::move(other._entries);
+                _modMask = other._modMask;
+                _consumerCursor = other._consumerCursor;
+                _producerCursor = other._producerCursor;
+            }
+            return *this;
+        }
+
+        // Add an item to the end of the container
+        void enqueue(const T &item) {
+            auto next = _producerCursor.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+            // Wait for space to be available
+            long wrapPoint = next - _entries.size();
+            long min = _consumerCursor.load(std::memory_order_acquire);
+            while (wrapPoint > min) {
+                min = _consumerCursor.load(std::memory_order_acquire);
+                std::this_thread::yield();
+            }
+
+            // Add item to the container
+            _entries[next & _modMask] = item;
+
+            // Update producer cursor
+            _producerCursor.store(next, std::memory_order_release);
+        }
+
+        // Remove an item from the beginning of the container
+        T dequeue() {
+            auto next = _consumerCursor.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+            // Wait for data to be available
+            while (_producerCursor.load(std::memory_order_acquire) < next) {
+                std::this_thread::yield();
+            }
+
+            // Get item from the container
+            auto result = _entries[next & _modMask];
+
+            // Update consumer cursor
+            _consumerCursor.store(next, std::memory_order_release);
+
+            return result;
+        }
+
+        // Try to remove an item from the beginning of the container
+        bool tryDequeue(T &obj) {
+            auto next = _consumerCursor.load(std::memory_order_acquire) + 1;
+
+            // Check if data is available
+            if (_producerCursor.load(std::memory_order_acquire) < next) {
+                return false;
+            }
+
+            // Get item from the container
+            obj = dequeue();
+
+            return true;
+        }
+
+        // Get the number of items in the container
+        int count() const {
+            return static_cast<int>(_producerCursor.load(std::memory_order_acquire) -
+                                    _consumerCursor.load(std::memory_order_acquire));
+        }
+
+        void drain() {
+            T val;
+            while (tryDequeue(val)) {}
+        }
+
+    private:
+        std::vector<T> _entries;
+        size_t _modMask;
+        std::atomic_size_t _consumerCursor;// = 0;
+        std::atomic_size_t _producerCursor;// = 0;
+
+        // Compute the next power of two
+        static size_t nextPowerOfTwo(size_t n) {
+            size_t result = 2;
+            while (result < n) {
+                result <<= 1;
+            }
+            return result;
+        }
+    };
+
+    using TimePoint = std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds>;
+
+    class Timer {
+    public:
+        Timer();
+        Timer(const Timer &other);
+        Timer(Timer &&other) noexcept;
+        Timer& operator=(const Timer &other);
+        Timer& operator=(Timer &&other) noexcept;
+        inline float getDeltaTime() const { return deltaTime; }
+        void update();
+    private:
+        TimePoint tp1;
+        TimePoint tp2;
+        float deltaTime;
+        float elapsedTime;        
     };
 }
 
