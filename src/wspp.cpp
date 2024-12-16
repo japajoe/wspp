@@ -1067,7 +1067,6 @@ namespace wspp {
     }
 
     bool WebSocket::receive(Message *message) {
-
         uint8_t peekData = 0;
         ssize_t peekedBytes = 0;
 
@@ -1089,7 +1088,9 @@ namespace wspp {
             if (isControl(frame.opcode)) {
                 switch (frame.opcode) {
                     case OpCode_Close: {
-                        goto error;
+                        message->chunks = nullptr;
+                        message->opcode = OpCode_Close;
+                        return true;
                     }
                     break;
                     case OpCode_Ping:
@@ -1174,15 +1175,16 @@ namespace wspp {
         // TODO: do we need to reverse the bytes on a machine with a different endianess than x86?
         // NOTE: client frames are always masked
         if (payloadSize < 126) {
-            data = (1 << 7) | payloadSize;
+            uint8_t data = applyMask ? (1 << 7) : 0;
+            data |= (uint8_t)payloadSize;
 
             if (write(&data, sizeof(data)) <= 0) {
-
-                
                 return false;
             }
         } else if (payloadSize <= UINT16_MAX) {
-            uint8_t data = (1 << 7) | 126;
+            uint8_t data = applyMask ? (1 << 7) : 0;
+            data |= (uint8_t)126;
+
             if (write(&data, sizeof(data)) <= 0) {
                 return false;
             }
@@ -1196,7 +1198,9 @@ namespace wspp {
                 return false;
             }
         } else if (payloadSize > UINT16_MAX) {
-            uint8_t data = (1 << 7) | 127;
+            uint8_t data = applyMask ? (1 << 7) : 0;
+            data |= (uint8_t)127;
+
             uint8_t len[8] = {
                 static_cast<uint8_t>((payloadSize >> (8 * 7)) & 0xFF),
                 static_cast<uint8_t>((payloadSize >> (8 * 6)) & 0xFF),
@@ -1216,7 +1220,6 @@ namespace wspp {
                 return false;
             }
         }
-
 
         uint8_t mask[4] = {0};
 
