@@ -29,7 +29,7 @@
 #include <functional>
 
 namespace wspp {
-    namespace clients {
+    namespace wsclient {
         enum class EventType {
             Connected,
             Disconnected
@@ -42,9 +42,9 @@ namespace wspp {
 
     class WebClient {
     public:
-        wspp::clients::ReceivedCallback onReceived;
-        wspp::clients::ConnectedCallback onConnected;
-        wspp::clients::DisconnectedCallback onDisconnected;
+        wspp::wsclient::ReceivedCallback onReceived;
+        wspp::wsclient::ConnectedCallback onConnected;
+        wspp::wsclient::DisconnectedCallback onDisconnected;
         WebClient();
         WebClient(const std::string &uri);
         WebClient(const WebClient &other);
@@ -62,7 +62,7 @@ namespace wspp {
         std::atomic<bool> runThread;
         ConcurrentQueue<Message> incoming;
         ConcurrentQueue<Message> outgoing;
-        ConcurrentQueue<wspp::clients::EventType> events;
+        ConcurrentQueue<wspp::wsclient::EventType> events;
         void connect();
         void receiveMessages();
         void sendMessages();

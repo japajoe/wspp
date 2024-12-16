@@ -29,7 +29,7 @@
 #include <functional>
 
 namespace wspp {
-    namespace servers {
+    namespace wsserver {
         using TimeStamp = std::chrono::_V2::system_clock::time_point;
 
         struct Client {
@@ -69,9 +69,9 @@ namespace wspp {
 
     class WebServer {
     public:
-        wspp::servers::ReceivedCallback onReceived;
-        wspp::servers::ConnectedCallback onConnected;
-        wspp::servers::DisconnectedCallback onDisconnected;
+        wspp::wsserver::ReceivedCallback onReceived;
+        wspp::wsserver::ConnectedCallback onConnected;
+        wspp::wsserver::DisconnectedCallback onDisconnected;
         WebServer();
         WebServer(const Configuration &configuration);
         WebServer(const WebServer &other);
@@ -86,18 +86,18 @@ namespace wspp {
     private:
         Configuration configuration;
         WebSocket listener;
-        std::vector<wspp::servers::Client> clients;
+        std::vector<wspp::wsserver::Client> clients;
         std::thread networkThread;
         std::atomic<bool> runThread;
-        ConcurrentQueue<wspp::servers::Packet> incoming;
-        ConcurrentQueue<wspp::servers::Packet> outgoing;
-        ConcurrentQueue<wspp::servers::Event> events;
+        ConcurrentQueue<wspp::wsserver::Packet> incoming;
+        ConcurrentQueue<wspp::wsserver::Packet> outgoing;
+        ConcurrentQueue<wspp::wsserver::Event> events;
         void listen();
         void addConnection(WebSocket &client);
         void receiveMessages();
         void sendMessages();
         void checkForDisconnected(float &pingTimer, float deltaTime);
-        void disconnectClient(wspp::servers::Client &client);
+        void disconnectClient(wspp::wsserver::Client &client);
     };
 }
 

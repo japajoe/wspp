@@ -252,8 +252,8 @@ int main(int argc, char **argv) {
 
     client = std::make_unique<WebClient>("wss://pumpportal.fun/api/data");
     client->onConnected = onConnected;    
-    client->onReceived = onReceived;
     client->onDisconnected = onDisconnected;
+    client->onReceived = onReceived;
     client->start();
 
     while(runApp) {

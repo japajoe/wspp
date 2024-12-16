@@ -112,9 +112,9 @@ namespace wspp {
         }
 
         if(events.count() > 0) {
-            wspp::clients::EventType event;
+            wspp::wsclient::EventType event;
             while(events.tryDequeue(event)) {
-                if(event == wspp::clients::EventType::Connected) {
+                if(event == wspp::wsclient::EventType::Connected) {
                     if(onConnected)
                         onConnected();
                 } else {
@@ -133,7 +133,7 @@ namespace wspp {
         socket = WebSocket(AddressFamily::AFInet, WebSocketOption_None);
         
         if(!socket.connect(uri)) {
-            wspp::clients::EventType disconnectedEvent = wspp::clients::EventType::Disconnected;
+            auto disconnectedEvent = wspp::wsclient::EventType::Disconnected;
             events.enqueue(disconnectedEvent);
             socket.close();
             runThread.store(false);
@@ -142,7 +142,7 @@ namespace wspp {
 
         socket.setNonBlocking();
 
-        wspp::clients::EventType connectedEvent = wspp::clients::EventType::Connected;
+        auto connectedEvent = wspp::wsclient::EventType::Connected;
         events.enqueue(connectedEvent);
 
         while(runThread) {

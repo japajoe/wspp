@@ -105,7 +105,7 @@ namespace wspp {
 
     void WebServer::update() {
         if(incoming.count() > 0) {
-            wspp::servers::Packet packet;
+            wspp::wsserver::Packet packet;
             while(incoming.tryDequeue(packet)) {
                 if(onReceived)
                     onReceived(packet.clientId, packet.message);
@@ -114,9 +114,9 @@ namespace wspp {
         }
 
         if(events.count() > 0) {
-            wspp::servers::Event event;
+            wspp::wsserver::Event event;
             while(events.tryDequeue(event)) {
-                if(event.type == wspp::servers::EventType::Connected) {
+                if(event.type == wspp::wsserver::EventType::Connected) {
                     if(onConnected)
                         onConnected(event.clientId);
                 } else {
@@ -193,9 +193,9 @@ namespace wspp {
                 clients[i].lastPong = std::chrono::system_clock::now();
                 accepted = true;
 
-                wspp::servers::Event event;
+                wspp::wsserver::Event event;
                 event.clientId = i;
-                event.type = wspp::servers::EventType::Connected;
+                event.type = wspp::wsserver::EventType::Connected;
                 events.enqueue(event);
 
                 break;
@@ -208,7 +208,7 @@ namespace wspp {
 
     void WebServer::receiveMessages() {
         for(size_t i = 0; i < clients.size(); i++) {
-            wspp::servers::Client &client = clients[i];
+            wspp::wsserver::Client &client = clients[i];
 
             if(client.id < 0)
                 continue;
@@ -226,7 +226,7 @@ namespace wspp {
                         break;
                     }
                     default: {
-                        wspp::servers::Packet packet;
+                        wspp::wsserver::Packet packet;
                         packet.clientId = client.id;
                         packet.message = message;
                         packet.broadcast = false;
@@ -242,19 +242,19 @@ namespace wspp {
         if(outgoing.count() == 0)
             return;
 
-        wspp::servers::Packet packet;
+        wspp::wsserver::Packet packet;
 
         while(outgoing.tryDequeue(packet)) {
             if(packet.broadcast) {
                 for(size_t i = 0; i < clients.size(); i++) {
-                    wspp::servers::Client &client = clients[i];
+                    wspp::wsserver::Client &client = clients[i];
                     if(client.id == -1)
                         continue;
                     client.socket.send(packet.message.opcode, packet.message.chunks->payload, packet.message.chunks->payloadLength, false);
                 }
             } else {
                 if(packet.clientId < clients.size()) {
-                    wspp::servers::Client &client = clients[packet.clientId];
+                    wspp::wsserver::Client &client = clients[packet.clientId];
                     if(client.id >= 0) {
                         client.socket.send(packet.message.opcode, packet.message.chunks->payload, packet.message.chunks->payloadLength, false);
                     }
@@ -271,7 +271,7 @@ namespace wspp {
 
         if(pingTimer >= pingTime) {
             for(size_t i = 0; i < clients.size(); i++) {
-                wspp::servers::Client &client = clients[i];
+                wspp::wsserver::Client &client = clients[i];
                 if(client.id < 0)
                     continue;
                 client.socket.send(OpCode::Ping, false);
@@ -284,7 +284,7 @@ namespace wspp {
         auto now = std::chrono::system_clock::now();
 
         for(size_t i = 0; i < clients.size(); i++) {
-            wspp::servers::Client &client = clients[i];
+            wspp::wsserver::Client &client = clients[i];
             
             if(client.id < 0)
                 continue;
@@ -321,7 +321,7 @@ namespace wspp {
         message.chunks->payloadLength = size;
         message.chunks->next = nullptr;
 
-        wspp::servers::Packet packet;
+        wspp::wsserver::Packet packet;
         packet.clientId = clientId;
         packet.message = message;
         packet.broadcast = false;
@@ -355,7 +355,7 @@ namespace wspp {
         message.chunks->payloadLength = size;
         message.chunks->next = nullptr;
 
-        wspp::servers::Packet packet;
+        wspp::wsserver::Packet packet;
         packet.clientId = 0;
         packet.message = message;
         packet.broadcast = true;
@@ -363,10 +363,10 @@ namespace wspp {
         outgoing.enqueue(packet);
     }
 
-    void WebServer::disconnectClient(wspp::servers::Client &client) {
-        wspp::servers::Event event;
+    void WebServer::disconnectClient(wspp::wsserver::Client &client) {
+        wspp::wsserver::Event event;
         event.clientId = client.id;
-        event.type = wspp::servers::EventType::Disconnected;
+        event.type = wspp::wsserver::EventType::Disconnected;
 
         client.socket.close();
         client.id = -1;
