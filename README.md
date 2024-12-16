@@ -1,6 +1,9 @@
 # wspp
 A websocket implementation in C++. 
 
+# Note
+I am not following the websocket specification (RFC 6455) to the letter but I think this library covers the basics for now.
+
 # Examples
 Run as server
 ```cpp
