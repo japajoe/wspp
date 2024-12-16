@@ -198,9 +198,7 @@ int main(int argc, char **argv) {
     server->onConnected = onConnected;
     server->onDisconnected = onDisconnected;
     server->onReceived = onReceivedMessage;
-    
-    if(!server->start())
-        return 1;
+    server->start();
 
     while(runApp) {
         server->update();
@@ -255,9 +253,7 @@ int main(int argc, char **argv) {
     client = std::make_unique<WebClient>("wss://pumpportal.fun/api/data");
     client->onConnected = onConnected;    
     client->onReceived = onReceived;
-    
-    if(!client->start())
-        return 1;
+    client->start();
 
     while(runApp) {
         client->update();
