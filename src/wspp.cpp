@@ -560,7 +560,7 @@ namespace wspp {
     }
 
     Message::Message() {
-        opcode = OpCode_Control;
+        opcode = OpCode::Control;
         chunks = nullptr;
     }
 
@@ -1037,9 +1037,9 @@ namespace wspp {
 
     bool WebSocket::send(OpCode opcode, bool masked) {
         switch(opcode) {
-            case OpCode_Close:
-            case OpCode_Ping:
-            case OpCode_Pong:
+            case OpCode::Close:
+            case OpCode::Ping:
+            case OpCode::Pong:
                 return writeFrame(opcode, true, nullptr, 0, masked);
             default:
                 break;
@@ -1060,7 +1060,7 @@ namespace wspp {
             }
 
             if (!writeFrame(
-                        first ? opcode : OpCode_Control,
+                        first ? opcode : OpCode::Control,
                         payloadSize - length == 0,
                         pPayload,
                         length, masked)) {
@@ -1095,20 +1095,21 @@ namespace wspp {
 
         while (ret) {
             if (isControl(frame.opcode)) {
-                switch (frame.opcode) {
-                    case OpCode_Close: {
+                OpCode opcode = static_cast<OpCode>(frame.opcode);
+                switch (opcode) {
+                    case OpCode::Close: {
                         message->chunks = nullptr;
-                        message->opcode = OpCode_Close;
+                        message->opcode = OpCode::Close;
                         return true;
                     }
                     break;
-                    case OpCode_Ping:
-                        if(!writeFrame(OpCode_Pong, true, nullptr, 0, true))
+                    case OpCode::Ping:
+                        if(!writeFrame(OpCode::Pong, true, nullptr, 0, true))
                             goto error;
                         break;
-                    case OpCode_Pong:
+                    case OpCode::Pong:
                         message->chunks = nullptr;
-                        message->opcode = OpCode_Pong;
+                        message->opcode = OpCode::Pong;
                         return true;
                     default: {
                         // Ignore any other control frames for now
@@ -1170,7 +1171,7 @@ namespace wspp {
     }
 
     bool WebSocket::writeFrame(OpCode opcode, bool fin, const void *payload, uint64_t payloadSize, bool applyMask) {
-        uint8_t data = opcode;
+        uint8_t data = static_cast<uint8_t>(opcode);
 
         // NOTE: FIN is always set
         if (fin) {

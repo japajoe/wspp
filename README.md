@@ -23,6 +23,10 @@ void signalHandler(int signum) {
 
 int main(int argc, char **argv) {
     signal(SIGINT, &signalHandler);
+#ifndef _WIN32
+    //Windows does not have this signal (it is fired when a socket is suddenly disconnected).
+    signal(SIGPIPE, &signalHandler);
+#endif
 
     const uint16_t port = 8080;
 
@@ -43,7 +47,7 @@ int main(int argc, char **argv) {
 
         if(socket.accept(client)) {
             std::string hello = "Hello from server\n";
-            client.send(OpCode_Text, hello.c_str(), hello.size(), true);
+            client.send(OpCode_Text, hello.c_str(), hello.size(), false);
 
             Message message;
 
@@ -62,6 +66,7 @@ int main(int argc, char **argv) {
                 std::cout << msg << '\n';
             }
 
+            client.close();
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -90,6 +95,10 @@ void signalHandler(int signum) {
 
 int main(int argc, char **argv) {
     signal(SIGINT, &signalHandler);
+#ifndef _WIN32
+    //Windows does not have this signal (it is fired when a socket is suddenly disconnected).
+    signal(SIGPIPE, &signalHandler);
+#endif
 
     WebSocket socket(AddressFamily::AFInet, WebSocketOption_Reuse);
 

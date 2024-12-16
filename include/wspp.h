@@ -174,23 +174,23 @@ namespace wspp {
         SslStream ssl;
     };
 
-    enum OpCode : uint8_t {
-        OpCode_Control = 0x0,
-        OpCode_Text = 0x1,
-        OpCode_Binary = 0x2,
-        OpCode_Reserved1 = 0x3,
-        OpCode_Reserved2 = 0x4,
-        OpCode_Reserved3 = 0x5,
-        OpCode_Reserved4 = 0x6,
-        OpCode_Reserved5 = 0x7,
-        OpCode_Close = 0x8,
-        OpCode_Ping = 0x9,
-        OpCode_Pong = 0xA,
-        OpCode_Reserved6 = 0xB,
-        OpCode_Reserved7 = 0xC,
-        OpCode_Reserved8 = 0xD,
-        OpCode_Reserved9 = 0xE,
-        OpCode_Reserved10 = 0xF,
+    enum class OpCode : uint8_t {
+        Control = 0x0,
+        Text = 0x1,
+        Binary = 0x2,
+        Reserved1 = 0x3,
+        Reserved2 = 0x4,
+        Reserved3 = 0x5,
+        Reserved4 = 0x6,
+        Reserved5 = 0x7,
+        Close = 0x8,
+        Ping = 0x9,
+        Pong = 0xA,
+        Reserved6 = 0xB,
+        Reserved7 = 0xC,
+        Reserved8 = 0xD,
+        Reserved9 = 0xE,
+        Reserved10 = 0xF,
     };
 
     struct Frame {
