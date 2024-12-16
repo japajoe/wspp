@@ -1035,6 +1035,19 @@ namespace wspp {
         webSocket.close();
     }
 
+    bool WebSocket::send(OpCode opcode, bool masked) {
+        switch(opcode) {
+            case OpCode_Close:
+            case OpCode_Ping:
+            case OpCode_Pong:
+                return writeFrame(opcode, true, nullptr, 0, masked);
+            default:
+                break;
+        }
+        printf("Can't send unsupported opcode %d\n", static_cast<int>(opcode));
+        return false;
+    }
+
     bool WebSocket::send(OpCode opcode, const void *payload, size_t payloadSize, bool masked) {
         bool first = true;
         uint64_t chunkSize = 100;
@@ -1060,10 +1073,6 @@ namespace wspp {
         }
 
         return true;
-    }
-
-    bool WebSocket::sendPing() {
-        return writeFrame(OpCode_Ping, true, nullptr, 0, true);
     }
 
     bool WebSocket::receive(Message *message) {
@@ -1244,6 +1253,12 @@ namespace wspp {
             if(applyMask) {
                 while (i < payloadSize && chunk_size < sizeof(chunk)) {
                     chunk[chunk_size] = pPayload[i] ^ mask[i % 4];
+                    chunk_size += 1;
+                    i += 1;
+                }
+            } else {
+                while (i < payloadSize && chunk_size < sizeof(chunk)) {
+                    chunk[chunk_size] = pPayload[i];
                     chunk_size += 1;
                     i += 1;
                 }
