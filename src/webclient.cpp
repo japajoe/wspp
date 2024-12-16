@@ -133,7 +133,8 @@ namespace wspp {
         socket = WebSocket(AddressFamily::AFInet, WebSocketOption_None);
         
         if(!socket.connect(uri)) {
-            printf("Failed to connect\n");
+            wspp::clients::EventType disconnectedEvent = wspp::clients::EventType::Disconnected;
+            events.enqueue(disconnectedEvent);
             socket.close();
             runThread.store(false);
             return;

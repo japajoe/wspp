@@ -147,9 +147,6 @@ bool runApp = true;
 
 void signalHandler(int signum) {
     if(signum == SIGINT) {
-        if(server) {
-            server->stop();
-        }
         runApp = false;
     }
 }
@@ -205,6 +202,8 @@ int main(int argc, char **argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
+    server->stop();
+
     return 0;
 }
 ```
@@ -221,9 +220,6 @@ bool runApp = true;
 
 void signalHandler(int signum) {
     if(signum == SIGINT) {
-        if(client) {
-            client->stop();
-        }
         runApp = false;
     }
 }
@@ -232,6 +228,10 @@ void onConnected() {
     std::cout << "Connected to server\n";
     std::string request = R"({ "method": "subscribeNewToken" })";
     client->send(PacketType::Text, request.c_str(), request.size());
+}
+
+void onDisconnected() {
+    runApp = false;
 }
 
 void onReceived(Message message) {
@@ -253,12 +253,15 @@ int main(int argc, char **argv) {
     client = std::make_unique<WebClient>("wss://pumpportal.fun/api/data");
     client->onConnected = onConnected;    
     client->onReceived = onReceived;
+    client->onDisconnected = onDisconnected;
     client->start();
 
     while(runApp) {
         client->update();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+
+    client->stop();
 
     return 0;
 }
