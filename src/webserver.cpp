@@ -23,354 +23,214 @@
 // Special thanks to https://github.com/tsoding/cws for reference
 
 #include "webserver.h"
+#include <thread>
+#include <signal.h>
 
 namespace wspp {
+    static std::vector<WebServer*> webServers;
+    static bool signalsRegistered = false;
+
+    static void onHandleSignal(int signum) {
+        if(signum == SIGINT) {
+            for(size_t i = 0; i < webServers.size(); i++)
+                webServers[i]->stop();
+        }
+    }
+
+    static void registerSignals() {
+        if(!signalsRegistered) {
+            signal(SIGINT, &onHandleSignal);
+        #ifndef _WIN32
+            signal(SIGPIPE, &onHandleSignal);
+        #endif
+            signalsRegistered = true;
+        }
+    }
+
     WebServer::WebServer() {
-        runThread.store(false);
-        configuration.bindAddress = "0.0.0.0";
+        wspp::initialize();
+        configuration.bindAddress = "127.0.0.1";
         configuration.port = 8080;
         configuration.maxClients = 32;
-        onReceived = nullptr;
-        onConnected = nullptr;
-        onDisconnected = nullptr;
+        configuration.backlog = 10;
+        pingTimer = 0;
+        isRunning = false;
+        clients.resize(configuration.maxClients);
+        registerSignals();
     }
 
     WebServer::WebServer(const Configuration &configuration) {
-        runThread.store(false);
+        wspp::initialize();
         this->configuration = configuration;
-        onReceived = nullptr;
-        onConnected = nullptr;
-        onDisconnected = nullptr;
-    }
-
-    WebServer::WebServer(const WebServer &other) {
-        listener = other.listener;
-        runThread = other.runThread.load();
-        configuration = other.configuration;
-        onReceived = other.onReceived;
-        onConnected = other.onConnected;
-        onDisconnected = other.onDisconnected;
-    }
-
-    WebServer::WebServer(WebServer &&other) noexcept {
-        listener = std::move(other.listener);
-        runThread = other.runThread.load();    
-        other.runThread.store(false);
-        configuration = std::move(other.configuration);
-        onReceived = std::move(other.onReceived);
-        onConnected = std::move(onConnected);
-        onDisconnected = std::move(onDisconnected);
-    }
-
-    WebServer& WebServer::operator=(const WebServer &other) {
-        if(this != &other) {
-            listener = other.listener;
-            runThread = other.runThread.load();
-            configuration = other.configuration;
-            onReceived = other.onReceived;
-            onConnected = other.onConnected;
-            onDisconnected = other.onDisconnected;
-        }
-        return *this;
-    }
-
-    WebServer& WebServer::operator=(WebServer &&other) noexcept {
-        if(this != &other) {
-            listener = std::move(other.listener);
-            runThread = other.runThread.load();
-            other.runThread.store(false);
-            configuration = std::move(other.configuration);
-            onReceived = std::move(other.onReceived);
-            onConnected = std::move(onConnected);
-            onDisconnected = std::move(onDisconnected);
-        }
-        return *this;
-    }
-
-    void WebServer::start() {
-        if (networkThread.joinable() || runThread)
-            return;
-
-        runThread.store(true);
-
-        networkThread = std::thread([this]() { listen(); });
-    }
-
-    void WebServer::stop() {
-        runThread.store(false);
-
-        if (networkThread.joinable())
-            networkThread.join();
-    }
-
-    void WebServer::update() {
-        if(incoming.count() > 0) {
-            wspp::wsserver::Packet packet;
-            while(incoming.tryDequeue(packet)) {
-                if(onReceived)
-                    onReceived(packet.clientId, packet.message);
-                packet.message.destroy();
-            }
-        }
-
-        if(events.count() > 0) {
-            wspp::wsserver::Event event;
-            while(events.tryDequeue(event)) {
-                if(event.type == wspp::wsserver::EventType::Connected) {
-                    if(onConnected)
-                        onConnected(event.clientId);
-                } else {
-                    if(onDisconnected)
-                        onDisconnected(event.clientId);
-                }
-            }
-        }
-    }
-
-    void WebServer::listen() {
+        this->pingTimer = 0;
+        isRunning = false;
         clients.resize(configuration.maxClients);
-        incoming.drain();
-        outgoing.drain();
-        events.drain();
-
-        for(size_t i = 0; i < clients.size(); i++) {
-            clients[i].id = -1;
-        }
-
-        WebSocketOption options = WebSocketOption_Reuse | WebSocketOption_NonBlocking;
-
-        if(configuration.certificatePath.size() > 0 && configuration.privateKeyPath.size() > 0)
-            listener = WebSocket(AddressFamily::AFInet, options, configuration.certificatePath, configuration.privateKeyPath);
-        else
-            listener = WebSocket(AddressFamily::AFInet, options);
-        
-        if(!listener.bind(configuration.bindAddress, configuration.port)) {
-            printf("Failed to bind\n");
-            listener.close();
-            runThread.store(false);
-            return;
-        }
-        
-        if(!listener.listen(10)) {
-            printf("Failed to listen\n");
-            listener.close();
-            runThread.store(false);
-            return;
-        }
-
-        printf("Server started listening on %s:%zu\n", configuration.bindAddress.c_str(), configuration.port);
-
-        Timer timer;
-        float pingTimer = 0.0f;
-
-        while(runThread) {
-            WebSocket connection;
-
-            if(listener.accept(connection)) {
-                addConnection(connection);
-            }
-
-            receiveMessages();
-            sendMessages();
-            checkForDisconnected(pingTimer, timer.getDeltaTime());
-            timer.update();
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-
-        listener.close();
+        registerSignals();
     }
 
-    void WebServer::addConnection(WebSocket &connection) {
-        connection.setNonBlocking();
+    WebServer::~WebServer() {
+        listener.close();
 
-        bool accepted = false;
-
-        for(size_t i = 0; i < clients.size(); i++) {
-            if(clients[i].id == -1) {
-                clients[i].id = i;
-                clients[i].socket = connection;
-                clients[i].lastPong = std::chrono::system_clock::now();
-                accepted = true;
-
-                wspp::wsserver::Event event;
-                event.clientId = i;
-                event.type = wspp::wsserver::EventType::Connected;
-                events.enqueue(event);
-
+        bool found = false;
+        size_t index = 0;
+        
+        for(size_t i = 0; i < webServers.size(); i++) {
+            if(webServers[i] == this) {
+                index = i;
+                found = true;
                 break;
             }
         }
 
-        if(!accepted)
-            connection.close();
+        if(found) {
+            webServers.erase(webServers.begin() + index);
+        }
+
+        wspp::deinitialize();
     }
 
-    void WebServer::receiveMessages() {
-        for(size_t i = 0; i < clients.size(); i++) {
-            wspp::wsserver::Client &client = clients[i];
+    bool WebServer::run() {
+        if(isRunning)
+            return false;
 
-            if(client.id < 0)
+        if(configuration.certificatePath.size() > 0 && configuration.privateKeyPath.size() > 0)
+            listener = WebSocket(AddressFamily::AFInet, configuration.certificatePath, configuration.privateKeyPath);
+
+        if(!listener.bind(configuration.bindAddress, configuration.port))
+            return false;
+
+        listener.setBlocking(false);
+        
+        if(!listener.listen(configuration.backlog))
+            return false;
+
+        isRunning = true;
+
+        printf("Server is listening on %s:%zu\n", configuration.bindAddress.c_str(), configuration.port);
+        
+        while(isRunning) {
+            acceptConnections();
+            getMessages();
+            sendPings();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        listener.close();
+
+        return true;
+    }
+
+    void WebServer::stop() {
+        isRunning = false;
+    }
+
+    void WebServer::acceptConnections() {
+        WebSocket connection;
+        
+        if(listener.accept(connection)) {
+            bool accepted = false;
+            for(size_t i = 0; i < clients.size(); i++) {
+                Client &client = clients[i];
+                
+                if(client.connection.isSet())
+                    continue;
+        
+                client.connection = std::move(connection);
+                client.connection.setBlocking(false);
+                client.lastPong = 0;
+                client.id = static_cast<uint32_t>(i);
+
+                std::string response = "Hello from server";
+                sendTo(client, OpCode::Text, response.c_str(), response.size());
+
+                if(onConnected)
+                    onConnected(this, client.id);
+
+                accepted = true;
+                break;
+            }
+            if(!accepted)
+                connection.close();
+        }
+    }
+
+    void WebServer::getMessages() {
+        for (Client &client : clients) {
+            if(!client.connection.isSet())
                 continue;
 
             Message message;
 
-            if(client.socket.receive(&message)) {
+            Result result = client.connection.receive(&message);
+
+            if(result == Result::Ok) {
                 switch(message.opcode) {
-                    case OpCode::Pong: {
-                        client.lastPong = std::chrono::system_clock::now();
+                    case OpCode::Text:
+                    case OpCode::Binary:
+                        if(onReceived)
+                            onReceived(this, client.id, message);
                         break;
-                    }
-                    case OpCode::Close: {
-                        disconnectClient(client);
+                    case OpCode::Close:
+                        client.connection.close();
+                        if(onDisconnected)
+                            onDisconnected(this, client.id);
                         break;
-                    }
-                    default: {
-                        wspp::wsserver::Packet packet;
-                        packet.clientId = client.id;
-                        packet.message = message;
-                        packet.broadcast = false;
-                        incoming.enqueue(packet);
+                    case OpCode::Pong:
+                        client.lastPong = 0;
                         break;
-                    }
-                }
-            }
-        }
-    }
-
-    void WebServer::sendMessages() {
-        if(outgoing.count() == 0)
-            return;
-
-        wspp::wsserver::Packet packet;
-
-        while(outgoing.tryDequeue(packet)) {
-            if(packet.broadcast) {
-                for(size_t i = 0; i < clients.size(); i++) {
-                    wspp::wsserver::Client &client = clients[i];
-                    if(client.id == -1)
-                        continue;
-                    client.socket.send(packet.message.opcode, packet.message.chunks->payload, packet.message.chunks->payloadLength, false);
-                }
-            } else {
-                if(packet.clientId < clients.size()) {
-                    wspp::wsserver::Client &client = clients[packet.clientId];
-                    if(client.id >= 0) {
-                        client.socket.send(packet.message.opcode, packet.message.chunks->payload, packet.message.chunks->payloadLength, false);
-                    }
+                    default:
+                        break;
                 }
             }
             
-            packet.message.destroy();
+            message.destroy();
         }
     }
 
-    void WebServer::checkForDisconnected(float &pingTimer, float deltaTime) {
-        constexpr float pingTime = 5.0f;
-        constexpr uint64_t timeOutMilliseconds = 7500;
-
-        if(pingTimer >= pingTime) {
-            for(size_t i = 0; i < clients.size(); i++) {
-                wspp::wsserver::Client &client = clients[i];
-                if(client.id < 0)
-                    continue;
-                client.socket.send(OpCode::Ping, false);
-            }
-            pingTimer = 0.0f;
+    void WebServer::sendPings() {
+        if(pingTimer >= 30000) {
+            sendAll(OpCode::Ping, nullptr, 0);
+            pingTimer = 0;
         } else {
-            pingTimer += deltaTime;
-        }
+            pingTimer += 10;
 
-        auto now = std::chrono::system_clock::now();
+            for (Client &client : clients) {
+                if(!client.connection.isSet())
+                    continue;
+                
+                client.lastPong += 10;
 
-        for(size_t i = 0; i < clients.size(); i++) {
-            wspp::wsserver::Client &client = clients[i];
-            
-            if(client.id < 0)
-                continue;
-
-            if((now - client.lastPong) > std::chrono::milliseconds(timeOutMilliseconds)) {
-                disconnectClient(client);
+                if(client.lastPong >= 45000) {
+                    client.connection.close();
+                    if(onDisconnected)
+                        onDisconnected(this, client.id);
+                }
             }
         }
     }
 
-    void WebServer::send(uint32_t clientId, PacketType type, const void *data, size_t size) {
-        if(data == nullptr)
+    void WebServer::send(uint32_t clientId, OpCode opcode, const void *data, size_t size) {
+        if(clientId >= clients.size())
             return;
-        
-        if(size == 0)
-            return;
-        
-        Message message;
-        message.opcode = type == PacketType::Binary ? OpCode::Binary : OpCode::Text;
-        message.chunks = new MessageChunk();
-
-        if(message.chunks == nullptr)
-            return;
-
-        message.chunks->payload = new uint8_t[size];
-
-        if(message.chunks->payload == nullptr) {
-            delete message.chunks;
-            return;
-        }
-
-        memcpy(message.chunks->payload, data, size);
-
-        message.chunks->payloadLength = size;
-        message.chunks->next = nullptr;
-
-        wspp::wsserver::Packet packet;
-        packet.clientId = clientId;
-        packet.message = message;
-        packet.broadcast = false;
-
-        outgoing.enqueue(packet);
+        Client &client = clients[clientId];
+        sendTo(client, opcode, data, size);
     }
 
-    void WebServer::broadcast(PacketType type, const void *data, size_t size) {
-        if(data == nullptr)
-            return;
-        
-        if(size == 0)
-            return;
-        
-        Message message;
-        message.opcode = type == PacketType::Binary ? OpCode::Binary : OpCode::Text;
-        message.chunks = new MessageChunk();
-
-        if(message.chunks == nullptr)
-            return;
-
-        message.chunks->payload = new uint8_t[size];
-
-        if(message.chunks->payload == nullptr) {
-            delete message.chunks;
-            return;
-        }
-
-        memcpy(message.chunks->payload, data, size);
-
-        message.chunks->payloadLength = size;
-        message.chunks->next = nullptr;
-
-        wspp::wsserver::Packet packet;
-        packet.clientId = 0;
-        packet.message = message;
-        packet.broadcast = true;
-
-        outgoing.enqueue(packet);
+    void WebServer::broadcast(OpCode opcode, const void *data, size_t size) {
+        sendAll(opcode, data, size);
     }
 
-    void WebServer::disconnectClient(wspp::wsserver::Client &client) {
-        wspp::wsserver::Event event;
-        event.clientId = client.id;
-        event.type = wspp::wsserver::EventType::Disconnected;
+    void WebServer::sendTo(Client &client, OpCode opcode, const void *data, size_t size) {
+        if(!client.connection.isSet())
+            return;
+        client.connection.send(opcode, data, size, false);
+    }
 
-        client.socket.close();
-        client.id = -1;
-
-        events.enqueue(event);
+    void WebServer::sendAll(OpCode opcode, const void *data, size_t size) {
+        for (Client &client : clients) {
+            if(!client.connection.isSet())
+                continue;
+            client.connection.send(opcode, data, size, false);
+        }
     }
 }

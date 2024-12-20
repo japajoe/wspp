@@ -26,46 +26,32 @@
 #define WSPP_WEBCLIENT_HPP
 
 #include "wspp.h"
+#include <vector>
 #include <functional>
 
 namespace wspp {
-    namespace wsclient {
-        enum class EventType {
-            Connected,
-            Disconnected
-        };
+    class WebClient;
 
-        using ReceivedCallback = std::function<void(Message message)>;
-        using ConnectedCallback = std::function<void()>;
-        using DisconnectedCallback = std::function<void()>;
-    }
+    using ClientReceivedCallback = std::function<void(WebClient *client, Message &message)>;
+    using ClientConnectedCallback = std::function<void(WebClient *client)>;
+    using ClientDisconnectedCallback = std::function<void(WebClient *client)>;
 
     class WebClient {
     public:
-        wspp::wsclient::ReceivedCallback onReceived;
-        wspp::wsclient::ConnectedCallback onConnected;
-        wspp::wsclient::DisconnectedCallback onDisconnected;
+        ClientReceivedCallback onReceived;
+        ClientConnectedCallback onConnected;
+        ClientDisconnectedCallback onDisconnected;
         WebClient();
         WebClient(const std::string &uri);
-        WebClient(const WebClient &other);
-        WebClient(WebClient &&other) noexcept;
-        WebClient& operator=(const WebClient &other);
-        WebClient& operator=(WebClient &&other) noexcept;
-        void start();
+        ~WebClient();
+        bool run();
         void stop();
-        void update();
-        void send(PacketType type, const void *data, size_t size);
+        void send(OpCode opcode, const void *data, size_t size);
     private:
+        WebSocket connection;
         std::string uri;
-        WebSocket socket;
-        std::thread networkThread;
-        std::atomic<bool> runThread;
-        ConcurrentQueue<Message> incoming;
-        ConcurrentQueue<Message> outgoing;
-        ConcurrentQueue<wspp::wsclient::EventType> events;
-        void connect();
-        void receiveMessages();
-        void sendMessages();
+        bool isRunning;
+        void getMessages();
     };
 }
 

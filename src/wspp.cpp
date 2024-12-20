@@ -23,544 +23,17 @@
 // Special thanks to https://github.com/tsoding/cws for reference
 
 #include "wspp.h"
-#include <regex>
-#include <unordered_map>
 #include <random>
-#include <thread>
-#include <fcntl.h>
-
-#ifndef SOCKET_ERROR
-#define SOCKET_ERROR (-1)
-#endif
+#include <regex>
+#include <utility>
 
 namespace wspp {
-#ifdef _WIN32
-    static bool winsockInitialized = false;
-#endif
-
-    static void initializeWinsock2() {
-    #ifdef _WIN32
-        if(winsockInitialized)
-            return;
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) == 0) {
-            printf("Failed to initialize winsock\n")
-            winsockInitialized = true;
-        }
-    #endif        
-    }
-
-    static std::string base64Encode(const uint8_t *buffer, size_t size) {
-        BIO* bio;
-        BIO* b64;
-        BUF_MEM* bufferPtr;
-
-        b64 = BIO_new(BIO_f_base64());
-        bio = BIO_new(BIO_s_mem());
-        bio = BIO_push(b64, bio);
-        BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL); // No newlines
-        BIO_write(bio, buffer, size);
-        BIO_flush(bio);
-        BIO_get_mem_ptr(bio, &bufferPtr);
-        BIO_set_close(bio, BIO_NOCLOSE);
-        BIO_free_all(bio);
-
-        return std::string(bufferPtr->data, bufferPtr->length);
-    }
-
-    Socket::Socket() {
-        initializeWinsock2();
-        std::memset(&s, 0, sizeof(socket_t));
-        s.fd = -1;
-    }
-
-    Socket::Socket(AddressFamily addressFamily) {
-        initializeWinsock2();
-        std::memset(&s, 0, sizeof(socket_t));
-        s.fd = socket(static_cast<int>(addressFamily), SOCK_STREAM, 0);
-    #ifdef _WIN32
-        if(s.fd == INVALID_SOCKET)
-            s.fd = -1;
-    #endif
-    }
-
-    Socket::Socket(const Socket &other) {
-        s = other.s;
-    }
-
-    Socket::Socket(Socket &&other) noexcept {
-        s = std::move(other.s);
-    }
-
-    Socket& Socket::operator=(const Socket &other) {
-        if(this != &other) {
-            s = other.s;
-        }
-        return *this;
-    }
-
-    Socket& Socket::operator=(Socket &&other) noexcept {
-        if(this != &other) {
-            s = std::move(other.s);
-        }
-        return *this;
-    }
-
-    void Socket::close() {
-    #ifdef _WIN32
-        closesocket(s.fd);
-    #else
-        ::close(s.fd);
-    #endif
-        s.fd = -1;
-    }
-    
-    bool Socket::bind(const std::string &bindAddress, uint16_t port) {
-        sockaddr_in_t address = {0};
-        address.sin_family = AF_INET;
-
-        struct in_addr addr;
-
-        if (inet_pton(AF_INET, bindAddress.c_str(), &addr) <= 0)
-            return false;
-
-        address.sin_addr.s_addr = INADDR_ANY;
-        std::memcpy(&address.sin_addr.s_addr, &addr, sizeof(addr));
-        
-        address.sin_port = htons(port);
-
-        std::memcpy(&s.address.ipv4, &address, sizeof(sockaddr_in_t));
-
-        return ::bind(s.fd, (struct sockaddr*)&s.address.ipv4, sizeof(sockaddr_in_t)) == SOCKET_ERROR ? false : true;
-    }
-
-    IPVersion Socket::detectIPVersion(const std::string &ip) {
-        struct sockaddr_in sa;
-        struct sockaddr_in6 sa6;
-
-        // Try to convert to IPv4
-        if (inet_pton(AF_INET, ip.c_str(), &(sa.sin_addr)) == 1) {
-            return IPVersion::IPv4;
-        }
-
-        // Try to convert to IPv6
-        if (inet_pton(AF_INET6, ip.c_str(), &(sa6.sin6_addr)) == 1) {
-            return IPVersion::IPv6;
-        }
-
-        // If both conversions fail, return Invalid
-        return IPVersion::Invalid;
-    }
-
-    bool Socket::connect(const std::string &ip, uint16_t port) {
-        IPVersion version = detectIPVersion(ip);
-
-        switch(version) {
-            case IPVersion::IPv4: {
-                s.address.ipv4.sin_family = AF_INET;
-                s.address.ipv4.sin_port = htons(port);
-                inet_pton(AF_INET, ip.c_str(), &s.address.ipv4.sin_addr);
-                return ::connect(s.fd, (struct sockaddr*)&s.address.ipv4, sizeof(s.address.ipv4)) == SOCKET_ERROR ? false : true;
-            }
-            case IPVersion::IPv6: {
-                s.address.ipv6.sin6_family = AF_INET6;
-                s.address.ipv6.sin6_port = htons(port);
-                inet_pton(AF_INET6, ip.c_str(), &s.address.ipv6.sin6_addr);
-                return ::connect(s.fd, (struct sockaddr*)&s.address.ipv6, sizeof(s.address.ipv6)) == SOCKET_ERROR ? false : true;
-            }
-            default:
-                return false;
-        }
-    }
-
-    bool Socket::listen(int32_t backlog) {
-        return ::listen(s.fd, backlog) == SOCKET_ERROR ? false : true;
-    }
-
-    bool Socket::accept(Socket &socket) {
-        sockaddr_in_t clientAddr;
-        uint32_t addrLen = sizeof(clientAddr);
-
-        int clientFD = -1;
-
-    #ifdef _WIN32
-        clientFD = accept(s.fd, (struct sockaddr*)&clientAddr, (int32_t*)&addrLen);
-        
-        if(clientFD == INVALID_SOCKET)
-            clientFD = -1;
-    #else
-        clientFD = ::accept(s.fd, (struct sockaddr*)&clientAddr, &addrLen);
-    #endif
-
-        if (clientFD == -1)
-            return false;
-
-        socket.s.fd = clientFD;
-        std::memcpy(&socket.s.address, &clientAddr, sizeof(sockaddr_in_t));
-
-        return true;
-    }
-
-    bool Socket::setOption(int level, int option, const void *value, uint32_t valueSize) {
-    #ifdef _WIN32
-        return setsockopt(s.fd, level, option, (char*)value, valueSize) != 0 ? false : true;
-    #else
-        return setsockopt(s.fd, level, option, value, valueSize) != 0 ? false : true;
-    #endif
-    }
-
-    void Socket::setNonBlocking() {
-    #ifdef _WIN32
-        u_long mode = 1; // 1 to enable non-blocking socket
-        if (ioctlsocket(s.fd, FIONBIO, &mode) != 0) {
-            printf("Failed to set non-blocking mode\n");
-        }
-    #else
-        int flags = fcntl(s.fd, F_GETFL, 0);
-        fcntl(s.fd, F_SETFL, flags | O_NONBLOCK);
-    #endif
-    }
-
-    int32_t Socket::readByte() {
-        unsigned char b = 0;
-    #ifdef _WIN32
-        if(recv(s.fd, (char*)&b, 1, 0) > 0)
-            return static_cast<int32_t>(b);
-    #else
-        if(recv(s.fd, &b, 1, 0) > 0)
-            return static_cast<int32_t>(b);
-    #endif
-        return -1;
-    }
-
-    ssize_t Socket::read(void *buffer, size_t size) {
-    #ifdef _WIN32
-        return recv(s.fd, (char*)buffer, size, 0);
-    #else
-        return recv(s.fd, buffer, size, 0);
-    #endif
-    }
-
-    ssize_t Socket::write(const void *buffer, size_t size) {
-    #ifdef _WIN32
-        return send(s.fd, (char*)data, size, 0);
-    #else
-        return send(s.fd, buffer, size, 0);
-    #endif
-    }
-
-    ssize_t Socket::peek(void *buffer, size_t size) {
-    #ifdef _WIN32
-        return recv(s.fd, (char*)buffer, size, MSG_PEEK);
-    #else
-        return recv(s.fd, buffer, size, MSG_PEEK);
-    #endif
-    }
-
-    //To do: figure out better way than just passing the ipv4 address
-    ssize_t Socket::receiveFrom(void *buffer, size_t size) {
-        socklen_t clientLen = sizeof(s.address.ipv4);
-    #ifdef _WIN32
-        return recvfrom(s.fd, (char*)buffer, size, 0, reinterpret_cast<struct sockaddr*>(&s.address.ipv4), &clientLen);
-    #else
-        return recvfrom(s.fd, buffer, size, 0, reinterpret_cast<struct sockaddr*>(&s.address.ipv4), &clientLen);
-    #endif
-    }
-
-    //To do: figure out better way than just passing the ipv4 address
-    ssize_t Socket::sendTo(const void *buffer, size_t size) {
-        socklen_t clientLen = sizeof(s.address.ipv4);
-    #ifdef _WIN32
-        return sendto(s.fd, (char*)buffer, size, 0, reinterpret_cast<struct sockaddr*>(&s.address.ipv4), clientLen);
-    #else
-        return sendto(s.fd, buffer, size, 0, reinterpret_cast<struct sockaddr*>(&s.address.ipv4), clientLen);
-    #endif
-    }
-
-    int32_t Socket::getFileDescriptor() const {
-        return s.fd;
-    }
-
-    bool Socket::isSet() const {
-        return s.fd >= 0;
-    }
-
-    /////SSLCONTEXT/////
-    SslContext::SslContext() {
-        context = nullptr;
-    }
-
-    SslContext::SslContext(const SslContext &other) {
-        context = other.context;
-    }
-
-    SslContext::SslContext(SslContext &&other) noexcept {
-        context = std::exchange(other.context, nullptr);
-    }
-
-    SslContext& SslContext::operator=(const SslContext &other) {
-        if(this != &other) {
-            context = other.context;
-        }
-        return *this;
-    }
-
-    SslContext& SslContext::operator=(SslContext &&other) noexcept {
-        if(this != &other) {
-            context = std::exchange(other.context, nullptr);
-        }
-        return *this;
-    }
-
-    void SslContext::dispose() {
-        if(context) {
-            SSL_CTX_free(context);
-            context = nullptr;
-        }
-    }
-
-    SSL_CTX *SslContext::getContext() const {
-        return context;
-    }
-
-    bool SslContext::isServerContext() const {
-        if(!context)
-            return false;
-        return SSL_CTX_check_private_key(context) == 1;
-    }
-
-    bool SslContext::initialize(const char *certificatePath, const char *privateKeyPath) {
-        if(context)
-            return true;
-        
-        if(certificatePath != nullptr && privateKeyPath != nullptr) {
-            context = SSL_CTX_new(TLS_server_method());
-
-            if(context == nullptr) {
-                printf("Failed to create SSL context\n");
-                return false;
-            }
-            
-            if (SSL_CTX_use_certificate_file(context, certificatePath, SSL_FILETYPE_PEM) <= 0) {
-                SSL_CTX_free(context);
-                context = nullptr;
-                printf("Failed to use certificate file\n");
-                return false;
-            }
-
-            if (SSL_CTX_use_PrivateKey_file(context, privateKeyPath, SSL_FILETYPE_PEM) <= 0) {
-                SSL_CTX_free(context);
-                context = nullptr;
-                printf("Failed to use private key file\n");
-                return false;
-            }
-
-            if (!SSL_CTX_check_private_key(context)) {
-                SSL_CTX_free(context);
-                context = nullptr;
-                printf("Failed to check private key\n");
-                return false;
-            }
-            return true;
-        } else {
-            context = SSL_CTX_new(TLS_method());
-            if(context == nullptr) {
-                printf("Failed to create SSL context\n");
-                return false;
-            }
-            return true;
-        }
-    }
-
-    SslStream::SslStream() {
-        this->ssl = nullptr;
-    }
-
-    SslStream::SslStream(Socket socket, SslContext sslContext) {
-        if(socket.isSet() && sslContext.getContext()) {
-            ssl = SSL_new(sslContext.getContext());
-
-            if(ssl == nullptr)
-                throw SslException("Failed to create SSL instance");
-
-            SSL_set_fd(ssl, socket.getFileDescriptor());
-
-            if (SSL_accept(ssl) <= 0) {
-                SSL_shutdown(ssl);
-                SSL_free(ssl);
-                ssl = nullptr;
-                throw SslException("Failed to SSL accept");
-            }
-        }
-    }
-
-    SslStream::SslStream(Socket socket, SslContext sslContext, const char *hostName) {
-        if(socket.isSet() && sslContext.getContext()) {
-            ssl = SSL_new(sslContext.getContext());
-
-            if(ssl == nullptr)
-                throw SslException("Failed to create SSL instance");
-
-            SSL_set_fd(ssl, socket.getFileDescriptor());
-            
-            if(hostName)
-                SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, (void*)hostName);
-
-            if (SSL_connect(ssl) != 1) {
-                SSL_shutdown(ssl);
-                SSL_free(ssl);
-                ssl = nullptr;
-                throw SslException("Failed to SSL connect");
-            }
-        }
-    }
-
-    SslStream::SslStream(const SslStream &other) {
-        ssl = other.ssl;
-    }
-
-    SslStream::SslStream(SslStream &&other) noexcept {
-        ssl = std::exchange(other.ssl, nullptr);
-    }
-
-    SslStream& SslStream::operator=(const SslStream &other) {
-        if(this != &other) {
-            ssl = other.ssl;
-        }
-        return *this;
-    }
-
-    SslStream& SslStream::operator=(SslStream &&other) noexcept {
-        if(this != &other) {
-            ssl = std::exchange(other.ssl, nullptr);
-        }
-        return *this;
-    }
-
-    int32_t SslStream::readByte() {
-        if(!ssl)
-            return -1;
-        unsigned char b = 0;
-        if(SSL_read(ssl, &b, 1) > 0)
-            return static_cast<int32_t>(b);
-        return -1;
-    }
-
-    ssize_t SslStream::read(void *buffer, size_t size) {
-        if(ssl) {
-            int bytesRead = SSL_read(ssl, buffer, size);
-            if(bytesRead <= 0) {
-                //int errorCode = SSL_get_error(ssl, bytesRead);
-                //printf("SSL_read error code: %d\n", errorCode);
-            }
-            return bytesRead;
-        }
-        return 0;
-    }
-
-    ssize_t SslStream::write(const void *buffer, size_t size) {
-        if(ssl)
-            return SSL_write(ssl, buffer, size);
-        return 0;
-    }
-
-    ssize_t SslStream::peek(void *buffer, size_t size) {
-        if(ssl)
-            return SSL_peek(ssl, buffer, size);
-        return 0;
-    }
-
-    void SslStream::close() {
-        if(ssl) {
-            SSL_shutdown(ssl);
-            SSL_free(ssl);
-            ssl = nullptr;
-        }
-    }
-
-    bool SslStream::isSet() const {
-        return ssl != nullptr;
-    }
-
-    NetworkStream::NetworkStream() {
-
-    }
-
-    NetworkStream::NetworkStream(Socket socket) {
-        this->socket = socket;
-    }
-
-    NetworkStream::NetworkStream(Socket socket, SslStream ssl) {
-        this->socket = socket;
-        this->ssl = ssl;
-    }
-
-    NetworkStream::NetworkStream(const NetworkStream &other) {
-        socket = other.socket;
-        ssl = other.ssl;
-    }
-
-    NetworkStream::NetworkStream(NetworkStream &&other) noexcept {
-        socket = std::move(other.socket);
-        ssl = std::move(other.ssl);
-    }
-
-    NetworkStream& NetworkStream::operator=(const NetworkStream &other) {
-        if(this != &other) {
-            socket = other.socket;
-            ssl = other.ssl;
-        }
-        return *this;
-    }
-
-    NetworkStream& NetworkStream::operator=(NetworkStream &&other) noexcept {
-        if(this != &other) {
-            socket = std::move(other.socket);
-            ssl = std::move(other.ssl);
-        }
-        return *this;
-    }
-
-    int32_t NetworkStream::readByte() {
-        if(ssl.isSet())
-            return ssl.readByte();
-        else
-            return socket.readByte();
-    }
-
-    ssize_t NetworkStream::read(void *buffer, size_t size) {
-        if(ssl.isSet())
-            return ssl.read(buffer, size);
-        else
-            return socket.read(buffer, size);
-    }
-
-    ssize_t NetworkStream::write(const void *buffer, size_t size) {
-        if(ssl.isSet())
-            return ssl.write(buffer, size);
-        else
-            return socket.write(buffer, size);
-    }
-
-    ssize_t NetworkStream::peek(void *buffer, size_t size) {
-        if(ssl.isSet())
-            return ssl.peek(buffer, size);
-        else
-            return socket.peek(buffer, size);
-    }
-
-    void NetworkStream::close() {
-        if(ssl.isSet())
-            ssl.close();
-        socket.close();
-    }
-
-    bool NetworkStream::isSecure() const {
-        return ssl.isSet();
-    }
+    ///////////////
+    ///[Message]///
+    ///////////////
 
     Message::Message() {
-        opcode = OpCode::Control;
+        opcode = OpCode::Continuation;
         chunks = nullptr;
     }
 
@@ -603,234 +76,302 @@ namespace wspp {
         chunks = nullptr;
     }
 
+    bool Message::getText(std::string &s) {
+        MessageChunk *chunk = chunks;
+        bool success = false;
+
+        while(chunk) {
+            char *payload = (char*)chunk->payload;
+            s += std::string(payload, chunk->payloadLength);
+            chunk = chunk->next;
+            success = true;
+        }
+
+        return success;
+    }
+
+    bool Message::getRaw(std::vector<uint8_t> &data) {
+        MessageChunk *chunk = chunks;
+        size_t totalSize = 0;
+
+        while(chunk) {
+            totalSize += chunk->payloadLength;
+            chunk = chunk->next;
+        }
+
+        size_t index = 0;
+
+        if(totalSize > 0) {
+            data.resize(totalSize);
+
+            chunk = chunks;
+
+            while(chunk) {
+                memcpy(&data[index], chunk->payload, chunk->payloadLength);
+                index += chunk->payloadLength;
+                chunk = chunk->next;
+            }
+        }
+
+        return data.size() > 0;
+    }
+
+    ///////////////
+    //[WebSocket]//
+    ///////////////
+
+#ifdef _WIN32
+    static bool winsockInitialized = false;
+#endif
+
+    void initialize() {
+    #ifdef _WIN32
+        if(winsockInitialized)
+            return;
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) == 0) {
+            printf("Failed to initialize winsock\n")
+            winsockInitialized = true;
+        }
+    #endif        
+    }
+
+    void deinitialize() {
+    #ifdef _WIN32
+        if(!winsockInitialized)
+            return;
+        WSACleanup();
+        winsockInitialized = false;
+    #endif
+    }
+
     WebSocket::WebSocket() {
-        socket = Socket(AddressFamily::AFInet);
+        memset(&s, 0, sizeof(socket_t));
+        s.fd = -1;
+        s.addressFamily = AddressFamily::AFInet;
+        sslContext = nullptr;
+        ssl = nullptr;
     }
 
-    WebSocket::WebSocket(AddressFamily addressFamily, WebSocketOption options) {
-        socket = Socket(addressFamily);
-
-        if(options & WebSocketOption_Reuse) {
-            int reuse = 1;
-            socket.setOption(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-        }
-
-        if(options & WebSocketOption_NonBlocking)
-            socket.setNonBlocking();
+    WebSocket::WebSocket(AddressFamily addressFamily) {
+        memset(&s, 0, sizeof(socket_t));
+        s.fd = -1;
+        s.addressFamily = addressFamily;
+        sslContext = nullptr;
+        ssl = nullptr;
     }
 
-    WebSocket::WebSocket(AddressFamily addressFamily, WebSocketOption options, const std::string &certificatePath, const std::string &privateKeyPath) {
-        socket = Socket(addressFamily);
+    WebSocket::WebSocket(AddressFamily addressFamily, const std::string &certificatePath, const std::string &privateKeyPath) {
+        memset(&s, 0, sizeof(socket_t));
+        s.fd = -1;
+        s.addressFamily = addressFamily;
+        sslContext = nullptr;
+        ssl = nullptr;
 
-        if(options & WebSocketOption_Reuse) {
-            int reuse = 1;
-            socket.setOption(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        sslContext = SSL_CTX_new(TLS_server_method());
+
+        if(sslContext != nullptr) {
+            if (SSL_CTX_use_certificate_file(sslContext, certificatePath.c_str(), SSL_FILETYPE_PEM) <= 0) {
+                SSL_CTX_free(sslContext);
+                sslContext = nullptr;
+                return;
+            }
+
+            if (SSL_CTX_use_PrivateKey_file(sslContext, privateKeyPath.c_str(), SSL_FILETYPE_PEM) <= 0) {
+                SSL_CTX_free(sslContext);
+                sslContext = nullptr;
+                return;
+            }
+
+            if (!SSL_CTX_check_private_key(sslContext)) {
+                SSL_CTX_free(sslContext);
+                sslContext = nullptr;
+            }
         }
-
-        if(options & WebSocketOption_NonBlocking)
-            socket.setNonBlocking();
-
-        sslContext.initialize(certificatePath.c_str(), privateKeyPath.c_str());
     }
 
     WebSocket::WebSocket(const WebSocket &other) {
-        socket = other.socket;
+        s = other.s;
+        s.addressFamily = other.s.addressFamily;
         sslContext = other.sslContext;
-        sslStream = other.sslStream;
-        stream = other.stream;
+        ssl = other.ssl;
     }
 
     WebSocket::WebSocket(WebSocket &&other) noexcept {
-        socket = std::move(other.socket);
-        sslContext = std::move(other.sslContext);
-        sslStream = std::move(other.sslStream);
-        stream = std::move(other.stream);
+        memcpy(&s, &other.s, sizeof(other.s));
+        other.s.fd = -1;
+        sslContext = std::exchange(other.sslContext, nullptr);
+        ssl = std::exchange(other.ssl, nullptr);
+    }
+
+    WebSocket::~WebSocket() {
+        close();
     }
 
     WebSocket& WebSocket::operator=(const WebSocket &other) {
         if(this != &other) {
-            socket = other.socket;
+            s = other.s;
             sslContext = other.sslContext;
-            sslStream = other.sslStream;
-            stream = other.stream;
+            ssl = other.ssl;
         }
         return *this;
     }
 
     WebSocket& WebSocket::operator=(WebSocket &&other) noexcept {
         if(this != &other) {
-            socket = std::move(other.socket);
-            sslContext = std::move(other.sslContext);
-            sslStream = std::move(other.sslStream);
-            stream = std::move(other.stream);
+            memcpy(&s, &other.s, sizeof(other.s));
+            other.s.fd = -1;
+            sslContext = std::exchange(other.sslContext, nullptr);
+            ssl = std::exchange(other.ssl, nullptr);
         }
         return *this;
     }
 
-    void WebSocket::close() {
-        if(socket.getFileDescriptor() >= 0) {
-            sslStream.close();
-            sslContext.dispose();
-            socket.close();
-        }
-    }
-
-    bool WebSocket::bind(const std::string &address, uint16_t port) {
-        return socket.bind(address, port);
-    }
-
-    bool WebSocket::connect(const std::string &url) {
-        HostInfo info;
-
-        std::string URL = url;
-        if(!String::endsWith(URL, "/"))
-            URL += "/";
-        
-        if(!resolve(URL, info.ip, info.port, info.name)) {
-            printf("Failed to resolve URL %s\n", URL.c_str());
-            return false;
-        }
-
-        IPVersion ipVersion = Socket::detectIPVersion(info.ip);
-
-        switch(ipVersion) {
-            case IPVersion::IPv4:
-                socket = Socket(AddressFamily::AFInet);
-                break;
-            case IPVersion::IPv6:
-                socket = Socket(AddressFamily::AFInet6);
-                break;
-            default:
-                printf("Unsupported IP version\n");
+    bool WebSocket::bind(const std::string &bindAddress, uint16_t port) {
+        if(s.fd < 0) {
+            int32_t newfd = ::socket(static_cast<int>(s.addressFamily), SOCK_STREAM, 0);
+            if(newfd < 0)
                 return false;
+            s.fd = newfd;
         }
 
-        if(!socket.connect(info.ip, info.port)) {
-            printf("Failed to connect to %s:%d\n", info.ip.c_str(), info.port);
-            socket.close();
-            return false;
-        }
+        if (s.addressFamily == AddressFamily::AFInet) {
+            sockaddr_in address = {0};
+            address.sin_family = AF_INET;
+            address.sin_port = htons(port);
+            address.sin_addr.s_addr = INADDR_ANY;
 
-        URI uri(URL);
-        std::string scheme;
-        uri.getScheme(scheme);
-
-        std::string path;
-        uri.getPath(path);
-
-        if(scheme == "wss") {
-            sslContext.initialize(nullptr, nullptr);
-            sslStream = SslStream(socket, sslContext, info.name.c_str());
-            stream = NetworkStream(socket, sslStream);
-        } else {
-            stream = NetworkStream(socket);
-        }
-
-        std::string request;
-        std::string webKey = generateKey();
-
-        request += "GET " + path + " HTTP/1.1\r\n";
-        request += "Host: " + info.name + "\r\n";
-        request += "Upgrade: websocket\r\n";
-        request += "Connection: Upgrade\r\n";
-        request += "Sec-WebSocket-Key: " + webKey + "\r\n";
-        request += "Sec-WebSocket-Version: 13\r\n\r\n";
-
-        if(write(request.c_str(), request.size()) > 0) {
-            char data[1024];
-            memset(data, 0, 1024);
-
-            if(read(data, 1024) > 0) {
-                std::string response = std::string(data);
-                auto headerLines = String::split(response, "\r\n");
-                std::unordered_map<std::string,std::string> headers;
-
-                for(size_t i = 0; i < headerLines.size(); i++) {
-                    auto headerParts = String::split(headerLines[i], ":");
-                    if(headerParts.size() != 2)
-                        continue;
-                    std::string key = String::trim(headerParts[0]);
-                    std::string value = String::trim(headerParts[1]);
-                    headers[key] = value;
-                }
-
-                if(headers.count("Sec-WebSocket-Accept") > 0) {
-                    const std::string &acceptKey = headers["Sec-WebSocket-Accept"];
-
-                    if(!verifyKey(acceptKey, webKey)) {
-                        printf("Handshake keys mismatch!\n");
-                        close();
-                        return false;
-                    }
-                } else {
-                    printf("Handshake failed\n");
-                    close();
-                    return false;
-                }
-
-                // for(const auto &item : headers) {
-                //     printf("%s: %s\n", item.first.c_str(), item.second.c_str());
-                // }
+            // If you want to bind to a specific address, use inet_pton
+            if (inet_pton(AF_INET, bindAddress.c_str(), &address.sin_addr) <= 0) {
+                return false;
             }
+
+            memcpy(&s.address.ipv4, &address, sizeof(sockaddr_in));
+
+            int reuse = 1;
+            setOption(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+            return ::bind(s.fd, (struct sockaddr*)&address, sizeof(address)) == 0;
+        } else if (s.addressFamily == AddressFamily::AFInet6) {
+            sockaddr_in6 address = {0};
+            address.sin6_family = AF_INET6;
+            address.sin6_port = htons(port);
+            address.sin6_addr = in6addr_any;
+
+            // If you want to bind to a specific address, use inet_pton
+            if (inet_pton(AF_INET6, bindAddress.c_str(), &address.sin6_addr) <= 0) {
+                return false;
+            }
+
+            memcpy(&s.address.ipv4, &address, sizeof(sockaddr_in6));
+
+            int reuse = 1;
+            setOption(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+            return ::bind(s.fd, (struct sockaddr*)&address, sizeof(address)) == 0;
         }
 
-        return true;
+        return false;
     }
 
     bool WebSocket::listen(int32_t backlog) {
-        return socket.listen(backlog);
+        if(s.fd < 0)
+            return false;
+        return ::listen(s.fd, backlog) == 0;
     }
 
-    bool WebSocket::accept(WebSocket &webSocket) {
-        if(!this->socket.accept(webSocket.socket))
+    bool WebSocket::accept(WebSocket &client) {
+        if(s.fd < 0) {
+            printf("Socket is not initialized\n");
             return false;
+        }
 
-        if(sslContext.isServerContext()) {
-            try {
-                webSocket.sslStream = SslStream(webSocket.socket, sslContext);
-                webSocket.stream = NetworkStream(webSocket.socket, webSocket.sslStream);
-            } catch (const SslException &ex) {
-                webSocket.close();
-                printf("Failed to create SslStream\n");
+        if(client.s.fd >= 0) {
+            printf("Can not accept socket because it is already initialized\n");
+            return false;
+        }
+
+        struct sockaddr addr;
+        memset(&addr, 0, sizeof(addr));
+        uint32_t size = 0;
+        
+    #ifdef _WIN32
+        client.s.fd = ::accept(s.fd,  &addr, (int32_t*)&size);
+    #else
+        client.s.fd = ::accept(s.fd,  &addr, &size);
+    #endif
+        
+        if(client.s.fd < 0) {
+            //printf("Failed to accept socket: %s\n", strerror(errno));
+            return false;
+        }
+        
+        if(size == sizeof(sockaddr_in_t)) {
+            memcpy(&client.s.address.ipv4, &addr, size);
+            client.s.addressFamily = AddressFamily::AFInet;
+        } else if(size == sizeof(sockaddr_in6_t)) {
+            memcpy(&client.s.address.ipv6, &addr, size);
+            client.s.addressFamily = AddressFamily::AFInet6;
+        } else {
+            printf("Unknown address family\n");
+            client.close();
+            return false;
+        }
+
+        if(sslContext) {
+            client.ssl = SSL_new(sslContext);
+            
+            if(client.ssl == nullptr) {
+                printf("Failed to create SSL\n");
+                client.close();
                 return false;
             }
-        } else {
-            webSocket.stream = NetworkStream(webSocket.socket);
+
+            SSL_set_fd(client.ssl, client.s.fd);
+
+            if (SSL_accept(client.ssl) <= 0) {
+                printf("Failed to set SSL file descriptor\n");
+                SSL_shutdown(client.ssl);
+                SSL_free(client.ssl);
+                client.ssl = nullptr;
+                client.close();
+                return false;
+            }
         }
 
         std::string header;
-
-        if(!readHeader(webSocket, header)) {
-            printf("Failed to read header\n");
-            sendBadRequest(webSocket);
-            return false;
-        }
-
+        std::string path;
         HttpMethod method;
 
-        try {
-            method = readMethod(header);
-        } catch (const std::invalid_argument& e) {
-            printf("Failed to read method\n");
-            sendBadRequest(webSocket);
+        if(!readHeader(client, header)) {
+            printf("Failed to read header\n");
+            sendBadRequest(client);
             return false;
         }
 
-        std::string path;
-
-        try {
-            path = readPath(header);
-        } catch (const std::invalid_argument& e) {
-            printf("Failed to read path\n");
-            sendBadRequest(webSocket);
+        if(!readMethod(header, method)) {
+            printf("Failed to read method from header\n");
+            sendBadRequest(client);
+            return false;
+        }
+        
+        if(!readPath(header, path)) {
+            printf("Failed to read path from header\n");
+            sendBadRequest(client);
             return false;
         }
 
-        Headers headers = readHeaderFields(header);
+        Headers headers;
+        
+        if(!readHeaderFields(header, headers)) {
+            printf("Failed to read header fields\n");
+            sendBadRequest(client);
+            return false;
+        }
 
         if(method != HttpMethod::GET) {
-            printf("Failed to read header fields\n");
-            sendBadRequest(webSocket);
+            printf("Unsupported method\n");
+            sendBadRequest(client);
             return false;
         }
 
@@ -840,8 +381,8 @@ namespace wspp {
 
         for (const auto &key : requiredHeaders) {
             if (headers.count(key) == 0) {
-                printf("Failed to find required header key: %s\n", key.c_str());
-                sendBadRequest(webSocket);
+                printf("Missing required header fieldL %s\n", key.c_str());
+                sendBadRequest(client);
                 return false;
             }
         }
@@ -853,19 +394,19 @@ namespace wspp {
 
         if(upgrade != "websocket") {
             printf("Failed to find websocket\n");
-            sendBadRequest(webSocket);
+            sendBadRequest(client);
             return false;
         }
 
         if(!String::contains(connection, "Upgrade")) {
             printf("Failed to find upgrade request\n");
-            sendBadRequest(webSocket);
+            sendBadRequest(client);
             return false;
         }
 
         if(version != "13") {
             printf("Version mismatch\n");
-            sendBadRequest(webSocket);
+            sendBadRequest(client);
             return false;
         }
 
@@ -877,29 +418,614 @@ namespace wspp {
         response += "Server: Testing\r\n";
         response += "Sec-WebSocket-Accept: " + acceptKey + "\r\n\r\n";
 
-        ssize_t sentBytes = webSocket.write(response.data(), response.size());
+        ssize_t sentBytes = client.write(response.data(), response.size());
+
+        if(sentBytes <= 0) {
+            printf("Failed to send handshake response\n");
+            client.close();
+            return false;
+        }
         
         return true;
     }
 
-    bool WebSocket::setOption(int level, int option, const void *value, uint32_t valueSize) {
-        return socket.setOption(level, option, value, valueSize);
+    bool WebSocket::connect(const std::string &uri) {
+        if(s.fd >= 0)
+            return false;
+
+        std::string URL = uri;
+
+        if(!String::endsWith(URL, "/"))
+            URL += "/";
+
+        std::string scheme;
+
+        if(!URI::getScheme(URL, scheme)) {
+            printf("Failed to determine scheme from URI %s\n", URL.c_str());
+            return false;
+        }
+
+        std::string path;
+
+        if(!URI::getPath(URL, path)) {
+            printf("Failed to determine path from URI %s\n", URL.c_str());
+            return false;
+        }
+
+        std::string ip;
+        std::string hostName;
+        uint16_t port;
+        
+        if(!resolve(URL, ip, port, hostName)) {
+            printf("Failed to resolve IP from URI %s\n", URL.c_str());
+            return false;
+        }
+
+        IPVersion ipVersion = detectIPVersion(ip);
+
+        if(ipVersion == IPVersion::Invalid) {
+            printf("Invalid IP version\n");
+            return false;
+        }
+        
+        AddressFamily addressFamily = (ipVersion == IPVersion::IPv4) ? AddressFamily::AFInet : AddressFamily::AFInet6;
+
+        s.fd = socket(static_cast<int>(addressFamily), SOCK_STREAM, 0);
+
+        if(s.fd < 0) {
+            printf("Failed to create socket\n");
+            return false;
+        }
+
+        int connectionResult = 0;
+
+        s.addressFamily = addressFamily;
+
+        if(ipVersion == IPVersion::IPv4) {
+            s.address.ipv4.sin_family = AF_INET;
+            s.address.ipv4.sin_port = htons(port);
+            inet_pton(AF_INET, ip.c_str(), &s.address.ipv4.sin_addr);
+            connectionResult = ::connect(s.fd, (struct sockaddr*)&s.address.ipv4, sizeof(s.address.ipv4));
+        } else {
+            s.address.ipv6.sin6_family = AF_INET6;
+            s.address.ipv6.sin6_port = htons(port);
+            inet_pton(AF_INET6, ip.c_str(), &s.address.ipv6.sin6_addr);
+            connectionResult = ::connect(s.fd, (struct sockaddr*)&s.address.ipv6, sizeof(s.address.ipv6));
+        }
+
+        if(connectionResult < 0) {
+            printf("Failed to connect\n");
+            close();
+            return false;
+        }
+
+        if(scheme == "wss") {
+            sslContext = SSL_CTX_new(TLS_method());
+
+            if(sslContext == nullptr) {
+                printf("Failed to create SSL context\n");
+                close();
+                return false;
+            }
+
+            ssl = SSL_new(sslContext);
+
+            if(ssl == nullptr) {
+                printf("Failed to create SSL\n");
+                close();
+                return false;
+            }
+
+            SSL_set_fd(ssl, s.fd);
+            
+            SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, (void*)hostName.c_str());
+
+            if (SSL_connect(ssl) != 1) {
+                printf("Failed to SSL connect\n");
+                close();
+                return false;
+            }
+        }
+
+        std::string request;
+        std::string webKey = generateKey();
+
+        request += "GET " + path + " HTTP/1.1\r\n";
+        request += "Host: " + hostName + "\r\n";
+        request += "Upgrade: websocket\r\n";
+        request += "Connection: Upgrade\r\n";
+        request += "Sec-WebSocket-Key: " + webKey + "\r\n";
+        request += "Sec-WebSocket-Version: 13\r\n\r\n";
+
+        if(write(request.c_str(), request.size()) <= 0) {
+            printf("Failed to send upgrade request\n");
+            close();
+            return false;
+        }
+
+        char data[1024];
+        memset(data, 0, 1024);
+
+        if(read(data, 1024) <= 0) {
+            printf("Failed to read upgrade response\n");
+            close();
+            return false;
+        }
+
+        std::string response = std::string(data);
+        auto headerLines = String::split(response, "\r\n");
+        Headers headers;
+
+        for(size_t i = 0; i < headerLines.size(); i++) {
+            auto headerParts = String::split(headerLines[i], ":");
+            if(headerParts.size() != 2)
+                continue;
+            std::string key = String::trim(headerParts[0]);
+            std::string value = String::trim(headerParts[1]);
+            headers[key] = value;
+        }
+
+        if(headers.count("Sec-WebSocket-Accept") == 0) {
+            printf("Missing Sec-WebSocket-Accept\n");
+            close();
+            return false;
+        }
+
+        const std::string &acceptKey = headers["Sec-WebSocket-Accept"];
+
+        if(!verifyKey(acceptKey, webKey)) {
+            printf("Handshake keys mismatch!\n");
+            close();
+            return false;
+        }
+
+        return true;
     }
 
-    void WebSocket::setNonBlocking() {
-        socket.setNonBlocking();
+    void WebSocket::close() {
+        if(s.fd >= 0) {
+        #ifdef _WIN32
+            closesocket(s.fd);
+        #else
+            ::close(s.fd);
+        #endif
+            s.fd = -1;
+        }
+        if(ssl) {
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            ssl = nullptr;
+        }
+        if(sslContext) {
+            SSL_CTX_free(sslContext);
+            sslContext = nullptr;
+        }
+    }
+
+    bool WebSocket::setOption(int level, int option, const void *value, uint32_t valueSize) {
+    #ifdef _WIN32
+        return setsockopt(s.fd, level, option, (char*)value, valueSize) != 0 ? false : true;
+    #else
+        return setsockopt(s.fd, level, option, value, valueSize) != 0 ? false : true;
+    #endif
+    }
+
+    void WebSocket::setBlocking(bool isBlocking) {
+    #ifdef _WIN32
+        u_long mode = isBlocking ? 0 : 1; // 1 to enable non-blocking socket
+        if (ioctlsocket(s.fd, FIONBIO, &mode) != 0) {
+            printf("Failed to set blocking mode\n");
+        }
+    #else
+        int flags = fcntl(s.fd, F_GETFL, 0);
+        if (isBlocking) {
+            // Clear the O_NONBLOCK flag to set the socket to blocking mode
+            fcntl(s.fd, F_SETFL, flags & ~O_NONBLOCK);
+        } else {
+            // Set the O_NONBLOCK flag to set the socket to non-blocking mode
+            fcntl(s.fd, F_SETFL, flags | O_NONBLOCK);
+        }
+    #endif
+    }
+
+    Result WebSocket::send(OpCode opcode, const void *data, size_t size, bool masked) {
+        bool first = true;
+
+        Result status = Result::Ok;
+
+        if(data && size > 0) {
+            uint64_t chunkSize = 100;
+            const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(data);
+
+            while (size > 0) {
+                uint64_t length = std::min(size, chunkSize);
+                OpCode opc = first ? opcode : OpCode::Continuation;
+                bool fin = size - length == 0;
+                
+                status = writeFrame(opc, fin, pPayload, length, masked);
+                
+                if(status != Result::Ok)
+                    return status;
+
+                pPayload += length;
+                size -= length;
+                first = false;
+            }
+        } else {
+            return writeFrame(opcode, true, nullptr, 0, masked);
+        }
+
+        return status;
+    }
+
+    Result WebSocket::receive(Message *message) {
+        uint8_t peekData = 0;
+        ssize_t peekedBytes = 0;
+
+        peekedBytes = peek(&peekData, 1);
+
+        if(peekedBytes <= 0) {
+            return (peekedBytes == 0) ? Result::NoData : Result::ConnectionError;
+        }
+
+        auto isControl = [] (uint8_t opcode) -> bool {
+            return 0x8 <= opcode && opcode <= 0xF;
+        };
+
+        MessageChunk *end = nullptr;
+
+        Frame frame = {0};
+        Result ret = readFrame(&frame);
+
+        while (ret == Result::Ok) {
+            if (isControl(frame.opcode)) {
+                OpCode opcode = static_cast<OpCode>(frame.opcode);
+                switch (opcode) {
+                    case OpCode::Close: {
+                        message->destroy();
+                        if (frame.payload) {
+                            delete[] frame.payload;
+                            frame.payload = nullptr;
+                        }
+                        message->chunks = nullptr;
+                        message->opcode = OpCode::Close;
+                        return Result::Ok;
+                    }
+                    case OpCode::Ping: {
+                        message->destroy();
+                        if (frame.payload) {
+                            delete[] frame.payload;
+                            frame.payload = nullptr;
+                        }
+                        message->chunks = nullptr;
+                        message->opcode = OpCode::Ping;
+                        return writeFrame(OpCode::Pong, true, nullptr, 0, true);
+                    }
+                    case OpCode::Pong: {
+                        message->destroy();
+                        if (frame.payload) {
+                            delete[] frame.payload;
+                            frame.payload = nullptr;
+                        }
+                        message->chunks = nullptr;
+                        message->opcode = OpCode::Pong;
+                        return Result::Ok;
+                    }
+                    default: {
+                        // Ignore any other control frames for now
+                        break;
+                    }
+                }
+
+                if(frame.payload) {
+                    delete[] frame.payload;
+                    frame.payload = nullptr;
+                }
+
+            } else {
+                // TODO: cws_read_message does not verify that the message starts with non CONT frame (does it have to start with non-CONT frame)?
+                // TODO: cws_read_message does not verify that any non-fin "continuation" frames have the CONT opcode
+                if (end == nullptr) {
+                    end = new MessageChunk();
+                    if (end == nullptr) {
+                        message->destroy();
+                        if (frame.payload) {
+                            delete[] frame.payload;
+                            frame.payload = nullptr;
+                        }
+                        return Result::AllocationError;
+                    }
+                    memset(end, 0, sizeof(*end));
+                    end->payload = frame.payload;
+                    end->payloadLength = frame.payloadLength;
+                    message->chunks = end;
+                    message->opcode = (OpCode)frame.opcode;
+                } else {
+                    end->next = new MessageChunk();
+                    if (end->next == nullptr) {
+                        message->destroy();
+                        if (frame.payload) {
+                            delete[] frame.payload;
+                            frame.payload = nullptr;
+                        }
+                        return Result::AllocationError;
+                    }
+                    memset(end->next, 0, sizeof(*end->next));
+                    end->next->payload = frame.payload;
+                    end->next->payloadLength = frame.payloadLength;
+                    end = end->next;
+                }
+
+                // The frame's payload has been moved to the message chunk (moved as in C++ moved,
+                // the ownership of the payload belongs to message now)
+                frame.payload = nullptr;
+                frame.payloadLength = 0;
+
+                if (frame.fin) {
+                    break;
+                }
+            }
+
+            ret = readFrame(&frame);
+        }
+
+        return Result::Ok;
     }
 
     ssize_t WebSocket::read(void *buffer, size_t size) {
-        return stream.read(buffer, size);
+        if(ssl)
+            return SSL_read(ssl, buffer, size);
+    #ifdef _WIN32
+        return ::recv(s.fd, (char*)buffer, size, 0);
+    #else
+        return ::recv(s.fd, buffer, size, 0);
+    #endif
     }
 
     ssize_t WebSocket::write(const void *buffer, size_t size) {
-        return stream.write(buffer, size);
+        if(ssl)
+            return SSL_write(ssl, buffer, size);
+    #ifdef _WIN32
+        return ::send(s.fd, (char*)data, size, 0);
+    #else
+        return ::send(s.fd, buffer, size, 0);
+    #endif
     }
 
     ssize_t WebSocket::peek(void *buffer, size_t size) {
-        return stream.peek(buffer, size);
+        if(ssl)
+            return SSL_peek(ssl, buffer, size);
+    #ifdef _WIN32
+        return ::recv(s.fd, (char*)buffer, size, MSG_PEEK);
+    #else
+        return ::recv(s.fd, buffer, size, MSG_PEEK);
+    #endif
+    }
+
+    Result WebSocket::writeFrame(OpCode opcode, bool fin, const void *payload, uint64_t payloadSize, bool applyMask) {
+        size_t body_offset = 0;
+        uint8_t frame[32] = {0};
+
+        if(fin) {
+            frame[0] = static_cast<uint8_t>(1 << 7);
+        }
+
+        frame[0] |= static_cast<uint8_t>(opcode);
+        
+        if(applyMask) {
+            frame[1] = static_cast<uint8_t>(1 << 7);
+        }
+        if(payloadSize < 126) {
+            frame[1] |= static_cast<uint8_t>(payloadSize);
+            body_offset = 2;
+        } else if(payloadSize <= 0xFFFF) {
+            frame[1] |= 126;
+            frame[2] = static_cast<uint8_t>(payloadSize >> 8);
+            frame[3] = static_cast<uint8_t>(payloadSize & 0xFF);
+            body_offset = 4;
+        } else {
+            frame[1] |= 127;
+            frame[2] = static_cast<uint8_t>((payloadSize >> 56) & 0xFF);
+            frame[3] = static_cast<uint8_t>((payloadSize >> 48) & 0xFF);
+            frame[4] = static_cast<uint8_t>((payloadSize >> 40) & 0xFF);
+            frame[5] = static_cast<uint8_t>((payloadSize >> 32) & 0xFF);
+            frame[6] = static_cast<uint8_t>((payloadSize >> 24) & 0xFF);
+            frame[7] = static_cast<uint8_t>((payloadSize >> 16) & 0xFF);
+            frame[8] = static_cast<uint8_t>((payloadSize >>  8) & 0xFF);
+            frame[9] = static_cast<uint8_t>((payloadSize)       & 0xFF);
+            body_offset = 10;
+        }
+
+        uint8_t mask[4] = {0};
+
+        if(applyMask) {
+            std::random_device rd;
+            std::mt19937 generator(rd());
+            std::uniform_int_distribution<int> distribution(0, 255);
+
+            for (size_t i = 0; i < 4; ++i) {
+                mask[i] = static_cast<unsigned char>(distribution(generator));
+            }
+
+            memcpy(&frame[body_offset], mask, 4);
+
+            body_offset += 4;
+        }
+
+        //send header
+        ssize_t bytesWritten = 0;
+        bytesWritten = write(frame, body_offset);
+
+        if(bytesWritten <= 0) {
+            printf("Error %s\n", strerror(errno));
+
+            if(bytesWritten == 0)
+                return Result::NoData;
+            else
+                return Result::ConnectionError;
+        }
+
+        //send payload
+        uint64_t i = 0;
+        const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(payload);
+
+        while (i < payloadSize) {
+            uint8_t chunk[1024];
+            uint64_t chunk_size = 0;
+
+            if(applyMask) {
+                while (i < payloadSize && chunk_size < sizeof(chunk)) {
+                    chunk[chunk_size] = pPayload[i] ^ mask[i % 4];
+                    chunk_size += 1;
+                    i += 1;
+                }
+            } else {
+                while (i < payloadSize && chunk_size < sizeof(chunk)) {
+                    chunk[chunk_size] = pPayload[i];
+                    chunk_size += 1;
+                    i += 1;
+                }
+            }
+
+            bytesWritten = write(chunk, chunk_size);
+
+            if(bytesWritten <= 0) {                
+                return Result::ConnectionError;
+            }
+        }
+        
+        return Result::Ok;
+    }
+
+    Result WebSocket::readFrame(Frame *frame) {
+        #define FIN(header)         ((header)[0] >> 7)
+        #define OPCODE(header)      ((header)[0] & 0xF)
+        #define MASK(header)        ((header)[1] >> 7)
+        #define PAYLOAD_LEN(header) ((header)[1] & 0x7F)
+
+        uint8_t header[2] = {0};
+
+        // Read the header
+        ssize_t bytesRead = read(header, sizeof(header));
+
+        if (bytesRead <= 0) {
+            if(bytesRead == 0)
+                return Result::NoData;
+            else
+                return Result::ConnectionError;
+        }
+
+        frame->fin = FIN(header);
+        frame->opcode = OPCODE(header);
+
+        uint64_t payloadLength = 0;
+
+        // Parse the payload length
+        // TODO: do we need to reverse the bytes on a machine with a different endianess than x86?
+        uint8_t len = PAYLOAD_LEN(header);
+        
+        switch (len) {
+            case 126: {
+                uint8_t ext_len[2] = {0};
+
+                bytesRead = read(&ext_len, sizeof(ext_len));
+
+                if (bytesRead <= 0) {
+                    if(bytesRead == 0)
+                        return Result::NoData;
+                    else
+                        return Result::ConnectionError;
+                }
+
+                for (size_t i = 0; i < sizeof(ext_len); ++i) {
+                    payloadLength = (payloadLength << 8) | ext_len[i];
+                }
+
+                break;
+            }
+            case 127: {
+                uint8_t ext_len[8] = {0};
+
+                bytesRead = read(&ext_len, sizeof(ext_len));
+
+                if (bytesRead <= 0) {
+                    if(bytesRead == 0)
+                        return Result::NoData;
+                    else
+                        return Result::ConnectionError;
+                }
+
+                for (size_t i = 0; i < sizeof(ext_len); ++i) {
+                    payloadLength = (payloadLength << 8) | ext_len[i];
+                }
+
+                break;
+            }
+            default:
+                payloadLength = len;
+        }
+
+        frame->payloadLength = payloadLength;
+
+        // Read the mask
+        uint8_t mask[4] = {0};
+        bool masked = MASK(header);
+
+        if (masked) {
+            bytesRead = read(mask, 4);
+
+            if (bytesRead <= 0) {
+                if(bytesRead == 0)
+                    return Result::NoData;
+                else
+                    return Result::ConnectionError;
+            }
+        }
+
+        // Read the payload
+        if (frame->payloadLength > 0) {
+            frame->payload = new uint8_t[payloadLength];
+
+            if (frame->payload == nullptr) {
+                return Result::AllocationError;
+            }
+
+            memset(frame->payload, 0, payloadLength);
+
+            // TODO: cws_read_frame does not handle when cws->read didn't read the whole payload
+            bytesRead = read(frame->payload, frame->payloadLength);
+
+            if (bytesRead <= 0) {
+                delete[] frame->payload;
+                frame->payload = nullptr;
+
+                if(bytesRead == 0)
+                    return Result::NoData;
+                else
+                    return Result::ConnectionError;
+            }
+
+            if(masked) {
+                for(size_t i = 0; i < frame->payloadLength; i++)
+                    frame->payload[i] = frame->payload[i] ^ mask[i % 4];
+            }
+
+            if(frame->opcode == 0x1) {
+                if(!isValidUTF8(frame->payload, frame->payloadLength)) {
+                    delete[] frame->payload;
+                    frame->payload = nullptr;
+                    return Result::UTF8Error;
+                }
+            }
+        }
+
+        return Result::Ok;
+    }
+
+    void WebSocket::sendBadRequest(WebSocket &connection) {
+        std::string response = "HTTP/1.1 400\r\n\r\n";
+        connection.write(response.c_str(), response.size());
+        connection.close();
     }
 
     bool WebSocket::readHeader(WebSocket &connection, std::string &header) {
@@ -966,57 +1092,67 @@ namespace wspp {
         return true;
     }
 
-    HttpMethod WebSocket::readMethod(const std::string &header) {
+    bool WebSocket::readMethod(const std::string &header, HttpMethod &method) {
         std::istringstream stream(header);
-        std::string method;
+        std::string m;
 
         // Read the first word from the header
-        if (stream >> method) {
-            if (method == "GET") {
-                return HttpMethod::GET;
-            } else if (method == "POST") {
-                return HttpMethod::POST;
-            } else if (method == "PUT") {
-                return HttpMethod::PUT;
-            } else if (method == "DELETE") {
-                return HttpMethod::DELETE;
-            } else if (method == "HEAD") {
-                return HttpMethod::HEAD;
-            } else if (method == "OPTIONS") {
-                return HttpMethod::OPTIONS;
-            } else if (method == "PATCH") {
-                return HttpMethod::PATCH;
-            } else if (method == "TRACE") {
-                return HttpMethod::TRACE;
-            } else if (method == "CONNECT") {
-                return HttpMethod::CONNECT;
+        if (stream >> m) {
+            if (m == "GET") {
+                method = HttpMethod::GET;
+                return true;
+            } else if (m == "POST") {
+                method = HttpMethod::POST;
+                return true;
+            } else if (m == "PUT") {
+                method = HttpMethod::PUT;
+                return true;
+            } else if (m == "DELETE") {
+                method = HttpMethod::DELETE;
+                return true;
+            } else if (m == "HEAD") {
+                method = HttpMethod::HEAD;
+                return true;
+            } else if (m == "OPTIONS") {
+                method = HttpMethod::OPTIONS;
+                return true;
+            } else if (m == "PATCH") {
+                method = HttpMethod::PATCH;
+                return true;
+            } else if (m == "TRACE") {
+                method = HttpMethod::TRACE;
+                return true;
+            } else if (m == "CONNECT") {
+                method = HttpMethod::CONNECT;
+                return true;
             } else {
-                throw std::invalid_argument("Unknown HTTP method: " + method);
+                return false;
             }
         }
 
-        throw std::invalid_argument("Invalid header format: " + header);
+        return false;
     }
 
-    std::string WebSocket::readPath(const std::string &header) {
+    bool WebSocket::readPath(const std::string &header, std::string &path) {
         std::istringstream stream(header);
         std::string method;
-        std::string path;
 
         // Read the first word (method)
         if (stream >> method) {
             // Read the second word (path)
             if (stream >> path) {
-                return path; // Return the extracted path
+                return true; // Return the extracted path
             }
         }
 
-        throw std::invalid_argument("Invalid header format: " + header);
+        return false;
     }
 
-    Headers WebSocket::readHeaderFields(const std::string &header) {
+    bool WebSocket::readHeaderFields(const std::string &header, Headers &headers) {
         auto headerLines = String::split(header, "\r\n");
-        std::unordered_map<std::string,std::string> headers;
+
+        if(headerLines.size() == 0)
+            return false;
 
         for(size_t i = 0; i < headerLines.size(); i++) {
             auto headerParts = String::split(headerLines[i], ":");
@@ -1026,434 +1162,23 @@ namespace wspp {
             std::string value = String::trim(headerParts[1]);
             headers[key] = value;
         }
-        return headers;
-    }
-
-    void WebSocket::sendBadRequest(WebSocket webSocket) {
-        std::string response = "HTTP/1.1 400\r\n\r\n";
-        webSocket.write(response.c_str(), response.size());
-        webSocket.close();
-    }
-
-    bool WebSocket::send(OpCode opcode, bool masked) {
-        switch(opcode) {
-            case OpCode::Close:
-            case OpCode::Ping:
-            case OpCode::Pong:
-                return writeFrame(opcode, true, nullptr, 0, masked);
-            default:
-                break;
-        }
-        printf("Can't send unsupported opcode %d\n", static_cast<int>(opcode));
-        return false;
-    }
-
-    bool WebSocket::send(OpCode opcode, const void *payload, size_t payloadSize, bool masked) {
-        bool first = true;
-        uint64_t chunkSize = 100;
-        const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(payload);
-
-        while (payloadSize > 0) {
-            uint64_t length = payloadSize;
-            if (length > chunkSize) {
-                length = chunkSize;
-            }
-
-            if (!writeFrame(
-                        first ? opcode : OpCode::Control,
-                        payloadSize - length == 0,
-                        pPayload,
-                        length, masked)) {
-                return false;
-            }
-
-            pPayload += length;
-            payloadSize -= length;
-            first = false;
-        }
-
         return true;
-    }
-
-    bool WebSocket::receive(Message *message) {
-        uint8_t peekData = 0;
-        ssize_t peekedBytes = 0;
-
-        peekedBytes = peek(&peekData, 1);
-
-        if(peekedBytes <= 0)
-            return false;
-
-        auto isControl = [] (uint8_t opcode) -> bool {
-            return 0x8 <= opcode && opcode <= 0xF;
-        };
-
-        MessageChunk *end = nullptr;
-
-        Frame frame = {0};
-        bool ret = readFrame(&frame);
-
-        while (ret) {
-            if (isControl(frame.opcode)) {
-                OpCode opcode = static_cast<OpCode>(frame.opcode);
-                switch (opcode) {
-                    case OpCode::Close: {
-                        message->chunks = nullptr;
-                        message->opcode = OpCode::Close;
-                        return true;
-                    }
-                    break;
-                    case OpCode::Ping:
-                        if(!writeFrame(OpCode::Pong, true, nullptr, 0, true))
-                            goto error;
-                        break;
-                    case OpCode::Pong:
-                        message->chunks = nullptr;
-                        message->opcode = OpCode::Pong;
-                        return true;
-                    default: {
-                        // Ignore any other control frames for now
-                        break;
-                    }
-                }
-
-                delete[] frame.payload;
-                frame.payload = nullptr;
-            } else {
-                // TODO: cws_read_message does not verify that the message starts with non CONT frame (does it have to start with non-CONT frame)?
-                // TODO: cws_read_message does not verify that any non-fin "continuation" frames have the CONT opcode
-                if (end == nullptr) {
-                    end = new MessageChunk();
-                    if (end == nullptr) {
-                        goto error;
-                    }
-                    memset(end, 0, sizeof(*end));
-                    end->payload = frame.payload;
-                    end->payloadLength = frame.payloadLength;
-                    message->chunks = end;
-                    message->opcode = (OpCode)frame.opcode;
-                } else {
-                    end->next = new MessageChunk();
-                    if (end->next == nullptr) {
-                        goto error;
-                    }
-                    memset(end->next, 0, sizeof(*end->next));
-                    end->next->payload = frame.payload;
-                    end->next->payloadLength = frame.payloadLength;
-                    end = end->next;
-                }
-
-                // The frame's payload has been moved to the message chunk (moved as in C++ moved,
-                // the ownership of the payload belongs to message now)
-                frame.payload = nullptr;
-                frame.payloadLength = 0;
-
-                if (frame.fin) {
-                    break;
-                }
-            }
-
-            ret = readFrame(&frame);
-        }
-
-        if (!ret) {
-            goto error;
-        }
-
-        return true;
-    error:
-        message->destroy();
-        if (frame.payload) {
-            delete[] frame.payload;
-            frame.payload = nullptr;
-        }
-        return false;
-    }
-
-    bool WebSocket::writeFrame(OpCode opcode, bool fin, const void *payload, uint64_t payloadSize, bool applyMask) {
-        uint8_t data = static_cast<uint8_t>(opcode);
-
-        // NOTE: FIN is always set
-        if (fin) {
-            data |= (1 << 7);
-        }
-        if (write(&data, 1) < 0) {
-            return false;
-        }
-
-        // Send masked and payload length
-        // TODO: do we need to reverse the bytes on a machine with a different endianess than x86?
-        // NOTE: client frames are always masked
-        if (payloadSize < 126) {
-            uint8_t data = applyMask ? (1 << 7) : 0;
-            data |= (uint8_t)payloadSize;
-
-            if (write(&data, sizeof(data)) <= 0) {
-                return false;
-            }
-        } else if (payloadSize <= UINT16_MAX) {
-            uint8_t data = applyMask ? (1 << 7) : 0;
-            data |= (uint8_t)126;
-
-            if (write(&data, sizeof(data)) <= 0) {
-                return false;
-            }
-
-            uint8_t len[2] = {
-                static_cast<uint8_t>((payloadSize >> (8 * 1)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 0)) & 0xFF)
-            };
-
-            if (write(&len, sizeof(len)) <= 0) {
-                return false;
-            }
-        } else if (payloadSize > UINT16_MAX) {
-            uint8_t data = applyMask ? (1 << 7) : 0;
-            data |= (uint8_t)127;
-
-            uint8_t len[8] = {
-                static_cast<uint8_t>((payloadSize >> (8 * 7)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 6)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 5)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 4)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 3)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 2)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 1)) & 0xFF),
-                static_cast<uint8_t>((payloadSize >> (8 * 0)) & 0xFF)
-            };
-
-            if (write(&data, sizeof(data)) <= 0) {
-                return false;
-            }
-
-            if (write(&len, sizeof(len)) <= 0) {
-                return false;
-            }
-        }
-
-        uint8_t mask[4] = {0};
-
-        if(applyMask) {
-            // Generate and send mask
-            for (size_t i = 0; i < 4; ++i) {
-                mask[i] = rand() % 0x100;
-            }
-
-            if (write(mask, sizeof(mask)) <= 0) {
-                return false;
-            }
-        }
-
-        // Mask the payload and send it
-        uint64_t i = 0;
-        const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(payload);
-        while (i < payloadSize) {
-            uint8_t chunk[1024];
-            uint64_t chunk_size = 0;
-
-            if(applyMask) {
-                while (i < payloadSize && chunk_size < sizeof(chunk)) {
-                    chunk[chunk_size] = pPayload[i] ^ mask[i % 4];
-                    chunk_size += 1;
-                    i += 1;
-                }
-            } else {
-                while (i < payloadSize && chunk_size < sizeof(chunk)) {
-                    chunk[chunk_size] = pPayload[i];
-                    chunk_size += 1;
-                    i += 1;
-                }
-            }
-
-            if (write(chunk, chunk_size) <= 0) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    bool WebSocket::readFrame(Frame *frame) {
-        #define FIN(header)         ((header)[0] >> 7)
-        #define OPCODE(header)      ((header)[0] & 0xF)
-        #define MASK(header)        ((header)[1] >> 7)
-        #define PAYLOAD_LEN(header) ((header)[1] & 0x7F)
-
-        uint8_t header[2] = {0};
-
-        // Read the header
-        if (read(header, sizeof(header)) <= 0) {
-            //printf("Failed to read frame header\n");
-            return false;
-        }
-
-        uint64_t payloadLength = 0;
-
-        // Parse the payload length
-        // TODO: do we need to reverse the bytes on a machine with a different endianess than x86?
-        uint8_t len = PAYLOAD_LEN(header);
-        switch (len) {
-            case 126: {
-                uint8_t ext_len[2] = {0};
-                if (read(&ext_len, sizeof(ext_len)) <= 0) {
-                    //printf("Failed to read payload length (1)\n");
-                    return false;
-                }
-
-                for (size_t i = 0; i < sizeof(ext_len); ++i) {
-                    payloadLength = (payloadLength << 8) | ext_len[i];
-                }
-            }
-            break;
-            case 127: {
-                uint8_t ext_len[8] = {0};
-                if (read(&ext_len, sizeof(ext_len)) <= 0) {
-                    //printf("Failed to read payload length (2)\n");
-                    return false;
-                }
-
-                for (size_t i = 0; i < sizeof(ext_len); ++i) {
-                    payloadLength = (payloadLength << 8) | ext_len[i];
-                }
-            }
-            break;
-            default:
-                payloadLength = len;
-        }
-
-        // Read the mask
-        // TODO: the server may not send masked frames
-        uint8_t mask[4] = {0};
-        bool masked = MASK(header);
-
-        if (masked) {
-            if (read(&mask, 4) <= 0) {
-                //printf("Failed to read mask\n");
-                return false;
-            }
-        }
-
-        // Read the payload
-        frame->fin = FIN(header);
-        frame->opcode = OPCODE(header);
-        frame->payloadLength = payloadLength;
-
-        if (frame->payloadLength > 0) {
-            frame->payload = new uint8_t[payloadLength];
-            if (frame->payload == nullptr) {
-                //printf("Failed to allocate memory for payload\n");
-                return false;
-            }
-            memset(frame->payload, 0, payloadLength);
-
-            // TODO: cws_read_frame does not handle when cws->read didn't read the whole payload
-            if (read(frame->payload, frame->payloadLength) <= 0) {
-                delete[] frame->payload;
-                frame->payload = nullptr;
-                //printf("Failed to read payload\n");
-                return false;
-            }
-
-            if(masked) {
-                for(size_t i = 0; i < frame->payloadLength; i++)
-                    frame->payload[i] = frame->payload[i] ^ mask[i % 4];
-            }
-
-            if(frame->opcode == 0x1) {
-                if(!isValidUTF8(frame->payload, frame->payloadLength)) {
-                    delete[] frame->payload;
-                    frame->payload = nullptr;
-                    //printf("Detected invalid UTF-8\n");
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    bool WebSocket::isValidUTF8(const void *payload, size_t size) {
-        int numBytes = 0; // Number of bytes expected in the current UTF-8 character
-        unsigned char byte;
-        const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(payload);
-
-        for (size_t i = 0; i < size; ++i) {
-            byte = pPayload[i];
-
-            if (numBytes == 0) {
-                // Determine the number of bytes in the UTF-8 character
-                if ((byte & 0x80) == 0) {
-                    // 1-byte character (ASCII)
-                    continue;
-                } else if ((byte & 0xE0) == 0xC0) {
-                    // 2-byte character
-                    numBytes = 1;
-                } else if ((byte & 0xF0) == 0xE0) {
-                    // 3-byte character
-                    numBytes = 2;
-                } else if ((byte & 0xF8) == 0xF0) {
-                    // 4-byte character
-                    numBytes = 3;
-                } else {
-                    // Invalid first byte
-                    return false;
-                }
-            } else {
-                // Check continuation bytes
-                if ((byte & 0xC0) != 0x80) {
-                    return false; // Invalid continuation byte
-                }
-                numBytes--;
-            }
-        }
-
-        return numBytes == 0; // Ensure all characters were complete
-    }
-
-    std::string WebSocket::generateKey() {
-        uint8_t randomBytes[16];
-
-        std::random_device rd;
-        std::mt19937 generator(rd());
-        std::uniform_int_distribution<int> distribution(0, 255);
-
-        for (auto& byte : randomBytes) {
-            byte = static_cast<unsigned char>(distribution(generator));
-        }
-
-        return base64Encode(randomBytes, 16);
-    }
-
-    std::string WebSocket::generateAcceptKey(const std::string &websocketKey) {
-        const std::string guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-        std::string acceptKey = websocketKey + guid;
-
-        uint8_t hash[SHA_DIGEST_LENGTH];
-        SHA1(reinterpret_cast<const unsigned char*>(acceptKey.c_str()), acceptKey.size(), hash);
-
-        return base64Encode(hash, SHA_DIGEST_LENGTH);
-    }
-
-    bool WebSocket::verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey) {
-        std::string expectedAcceptKey = generateAcceptKey(originalKey);
-        return receivedAcceptKey == expectedAcceptKey;
     }
 
     bool WebSocket::resolve(const std::string &uri, std::string &ip, uint16_t &port, std::string &hostname) {
         std::string scheme, host, path;
-        URI u(uri);
 
-        if(!u.getScheme(scheme)) {
+        if(!URI::getScheme(uri, scheme)) {
             printf("Failed to get scheme from URI\n");
             return false;
         }
 
-        if(!u.getHost(host)) {
+        if(!URI::getHost(uri, host)) {
             printf("Failed to get host from URI\n");
             return false;
         }
 
-        if(!u.getPath(path)) {
+        if(!URI::getPath(uri, path)) {
             printf("Failed to get path from URI");
             return false;
         }
@@ -1516,11 +1241,114 @@ namespace wspp {
         return true;
     }
 
-    URI::URI(const std::string &uriString) {
-        this->uri = uriString;
+    IPVersion WebSocket::detectIPVersion(const std::string &ip) {
+        struct sockaddr_in sa;
+        struct sockaddr_in6 sa6;
+
+        // Try to convert to IPv4
+        if (inet_pton(AF_INET, ip.c_str(), &(sa.sin_addr)) == 1) {
+            return IPVersion::IPv4;
+        }
+
+        // Try to convert to IPv6
+        if (inet_pton(AF_INET6, ip.c_str(), &(sa6.sin6_addr)) == 1) {
+            return IPVersion::IPv6;
+        }
+
+        // If both conversions fail, return Invalid
+        return IPVersion::Invalid;
     }
 
-    bool URI::getScheme(std::string &value) {
+    static std::string base64Encode(const uint8_t *buffer, size_t size) {
+        BIO* bio;
+        BIO* b64;
+        BUF_MEM* bufferPtr;
+
+        b64 = BIO_new(BIO_f_base64());
+        bio = BIO_new(BIO_s_mem());
+        bio = BIO_push(b64, bio);
+        BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL); // No newlines
+        BIO_write(bio, buffer, size);
+        BIO_flush(bio);
+        BIO_get_mem_ptr(bio, &bufferPtr);
+        BIO_set_close(bio, BIO_NOCLOSE);
+        BIO_free_all(bio);
+
+        return std::string(bufferPtr->data, bufferPtr->length);
+    }
+
+    std::string WebSocket::generateKey() {
+        uint8_t randomBytes[16];
+
+        std::random_device rd;
+        std::mt19937 generator(rd());
+        std::uniform_int_distribution<int> distribution(0, 255);
+
+        for (auto& byte : randomBytes) {
+            byte = static_cast<unsigned char>(distribution(generator));
+        }
+
+        return base64Encode(randomBytes, 16);
+    }
+
+    std::string WebSocket::generateAcceptKey(const std::string &websocketKey) {
+        const std::string guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        std::string acceptKey = websocketKey + guid;
+
+        uint8_t hash[SHA_DIGEST_LENGTH];
+        SHA1(reinterpret_cast<const unsigned char*>(acceptKey.c_str()), acceptKey.size(), hash);
+
+        return base64Encode(hash, SHA_DIGEST_LENGTH);
+    }
+
+    bool WebSocket::verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey) {
+        std::string expectedAcceptKey = generateAcceptKey(originalKey);
+        return receivedAcceptKey == expectedAcceptKey;
+    }
+
+    bool WebSocket::isValidUTF8(const void *payload, size_t size) {
+        int numBytes = 0; // Number of bytes expected in the current UTF-8 character
+        unsigned char byte;
+        const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(payload);
+
+        for (size_t i = 0; i < size; ++i) {
+            byte = pPayload[i];
+
+            if (numBytes == 0) {
+                // Determine the number of bytes in the UTF-8 character
+                if ((byte & 0x80) == 0) {
+                    // 1-byte character (ASCII)
+                    continue;
+                } else if ((byte & 0xE0) == 0xC0) {
+                    // 2-byte character
+                    numBytes = 1;
+                } else if ((byte & 0xF0) == 0xE0) {
+                    // 3-byte character
+                    numBytes = 2;
+                } else if ((byte & 0xF8) == 0xF0) {
+                    // 4-byte character
+                    numBytes = 3;
+                } else {
+                    // Invalid first byte
+                    return false;
+                }
+            } else {
+                // Check continuation bytes
+                if ((byte & 0xC0) != 0x80) {
+                    return false; // Invalid continuation byte
+                }
+                numBytes--;
+            }
+        }
+
+        return numBytes == 0; // Ensure all characters were complete
+    }
+
+    ///////////////
+    /////[URI]/////
+    ///////////////
+
+    bool URI::getScheme(const std::string &uri, std::string &value) {
         std::regex schemeRegex(R"(([^:/?#]+):\/\/)");
         std::smatch match;
         if (std::regex_search(uri, match, schemeRegex)) {
@@ -1530,7 +1358,7 @@ namespace wspp {
         return false;
     }
 
-    bool URI::getHost(std::string &value) {
+    bool URI::getHost(const std::string &uri, std::string &value) {
         std::regex hostRegex(R"(:\/\/([^/?#]+))");
         std::smatch match;
         if (std::regex_search(uri, match, hostRegex)) {
@@ -1540,8 +1368,7 @@ namespace wspp {
         return false;
     }
 
-    bool URI::getPath(std::string &value)
-    {
+    bool URI::getPath(const std::string &uri, std::string &value) {
         std::regex pathRegex(R"(:\/\/[^/?#]+([^?#]*))");
         std::smatch match;
         if (std::regex_search(uri, match, pathRegex)) {
@@ -1551,7 +1378,7 @@ namespace wspp {
         return false;
     }
 
-    bool URI::getQuery(std::string &value) {
+    bool URI::getQuery(const std::string &uri, std::string &value) {
         std::regex queryRegex(R"(\?([^#]*))");
         std::smatch match;
         if (std::regex_search(uri, match, queryRegex)) {
@@ -1561,7 +1388,7 @@ namespace wspp {
         return false;
     }
 
-    bool URI::getFragment(std::string &value) {
+    bool URI::getFragment(const std::string &uri, std::string &value) {
         std::regex fragmentRegex(R"(#(.*))");
         std::smatch match;
         if (std::regex_search(uri, match, fragmentRegex)) {
@@ -1570,6 +1397,10 @@ namespace wspp {
         }
         return false;
     }
+
+    ///////////////
+    ////[String]///
+    ///////////////
 
     bool String::contains(const std::string &haystack, const std::string &needle) {
         return haystack.find(needle) != std::string::npos;
@@ -1649,49 +1480,5 @@ namespace wspp {
         substrings.push_back(s.substr(start));
 
         return substrings;
-    }
-
-    Timer::Timer() {
-        tp1 = std::chrono::system_clock::now();
-        tp1 = std::chrono::system_clock::now();
-        deltaTime = 0;
-    }
-
-    Timer::Timer(const Timer &other) {
-        tp1 = other.tp1;
-        tp2 = other.tp2;
-        deltaTime = other.deltaTime;
-    }
-
-    Timer::Timer(Timer &&other) noexcept {
-        tp1 = other.tp1;
-        tp2 = other.tp2;
-        deltaTime = other.deltaTime;
-    }
-
-    Timer &Timer::operator=(const Timer &other) {
-        if(this != &other) {
-            tp1 = other.tp1;
-            tp2 = other.tp2;
-            deltaTime = other.deltaTime;
-        }
-        return *this;
-    }
-
-    Timer &Timer::operator=(Timer &&other) noexcept {
-        if(this != &other) {
-            tp1 = other.tp1;
-            tp2 = other.tp2;
-            deltaTime = other.deltaTime;
-        }
-        return *this;
-    }
-
-    void Timer::update() {
-        tp2 = std::chrono::system_clock::now();
-        std::chrono::duration<float> elapsed = tp2 - tp1;
-        tp1 = tp2;
-        deltaTime = elapsed.count();
-        elapsedTime += deltaTime;
     }
 }

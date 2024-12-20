@@ -26,78 +26,54 @@
 #define WSPP_WEBSERVER_HPP
 
 #include "wspp.h"
+#include <vector>
 #include <functional>
 
 namespace wspp {
-    namespace wsserver {
-        using TimeStamp = std::chrono::_V2::system_clock::time_point;
+    class WebServer;
 
-        struct Client {
-            WebSocket socket;
-            int32_t id;
-            TimeStamp lastPong;
-        };
-
-        struct Packet {
-            uint32_t clientId;
-            Message message;
-            bool broadcast;
-        };
-
-        enum class EventType {
-            Connected,
-            Disconnected
-        };
-
-        struct Event {
-            EventType type;
-            uint32_t clientId;
-        };
-
-        using ReceivedCallback = std::function<void(uint32_t clientId, Message message)>;
-        using ConnectedCallback = std::function<void(uint32_t clientId)>;
-        using DisconnectedCallback = std::function<void(uint32_t clientId)>;
-    }
+    using ServerReceivedCallback = std::function<void(WebServer *server, uint32_t clientId, Message &message)>;
+    using ServerConnectedCallback = std::function<void(WebServer *server, uint32_t clientId)>;
+    using ServerDisconnectedCallback = std::function<void(WebServer *server, uint32_t clientId)>;
 
     struct Configuration {
+        uint32_t maxClients;
+        uint32_t backlog;
+        uint16_t port;
         std::string bindAddress;
         std::string certificatePath;
         std::string privateKeyPath;
-        uint16_t port;
-        uint32_t maxClients;
+    };
+
+    struct Client {
+        WebSocket connection;
+        uint32_t id;
+        uint32_t lastPong;
     };
 
     class WebServer {
     public:
-        wspp::wsserver::ReceivedCallback onReceived;
-        wspp::wsserver::ConnectedCallback onConnected;
-        wspp::wsserver::DisconnectedCallback onDisconnected;
+        ServerReceivedCallback onReceived;
+        ServerConnectedCallback onConnected;
+        ServerDisconnectedCallback onDisconnected;
         WebServer();
         WebServer(const Configuration &configuration);
-        WebServer(const WebServer &other);
-        WebServer(WebServer &&other) noexcept;
-        WebServer& operator=(const WebServer &other);
-        WebServer& operator=(WebServer &&other) noexcept;
-        void start();
+        ~WebServer();
+        bool run();
         void stop();
-        void update();
-        void send(uint32_t clientId, PacketType type, const void *data, size_t size);
-        void broadcast(PacketType type, const void *data, size_t size);
+        void send(uint32_t clientId, OpCode opcode, const void *data, size_t size);
+        void broadcast(OpCode opcode, const void *data, size_t size);
     private:
-        Configuration configuration;
         WebSocket listener;
-        std::vector<wspp::wsserver::Client> clients;
-        std::thread networkThread;
-        std::atomic<bool> runThread;
-        ConcurrentQueue<wspp::wsserver::Packet> incoming;
-        ConcurrentQueue<wspp::wsserver::Packet> outgoing;
-        ConcurrentQueue<wspp::wsserver::Event> events;
-        void listen();
-        void addConnection(WebSocket &client);
-        void receiveMessages();
-        void sendMessages();
-        void checkForDisconnected(float &pingTimer, float deltaTime);
-        void disconnectClient(wspp::wsserver::Client &client);
+        std::vector<Client> clients;
+        uint32_t pingTimer;
+        Configuration configuration;
+        bool isRunning;
+        void acceptConnections();
+        void getMessages();
+        void sendPings();
+        void sendTo(Client &client, OpCode opcode, const void *data, size_t size);
+        void sendAll(OpCode opcode, const void *data, size_t size);
     };
 }
 

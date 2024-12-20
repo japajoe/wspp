@@ -23,184 +23,129 @@
 // Special thanks to https://github.com/tsoding/cws for reference
 
 #include "webclient.h"
+#include <thread>
+#include <signal.h>
 
 namespace wspp {
+    static std::vector<WebClient*> webClients;
+    static bool signalsRegistered = false;
+
+    static void onHandleSignal(int signum) {
+        if(signum == SIGINT) {
+            for(size_t i = 0; i < webClients.size(); i++)
+                webClients[i]->stop();
+        }
+    }
+
+    static void registerSignals() {
+        if(!signalsRegistered) {
+            signal(SIGINT, &onHandleSignal);
+        #ifndef _WIN32
+            signal(SIGPIPE, &onHandleSignal);
+        #endif
+            signalsRegistered = true;
+        }
+    }
+
     WebClient::WebClient() {
-        runThread.store(false);
-        uri = "ws://localhost:8080";
-        onReceived = nullptr;
-        onConnected = nullptr;
-        onDisconnected = nullptr;
+        wspp::initialize();
+        isRunning = false;
+        registerSignals();
     }
 
     WebClient::WebClient(const std::string &uri) {
-        runThread.store(false);
+        wspp::initialize();
         this->uri = uri;
-        onReceived = nullptr;
-        onConnected = nullptr;
-        onDisconnected = nullptr;
+        isRunning = false;
+        webClients.push_back(this);
+        registerSignals();
     }
 
-    WebClient::WebClient(const WebClient &other) {
-        socket = other.socket;
-        runThread = other.runThread.load();
-        uri = other.uri;
-        onReceived = other.onReceived;
-        onConnected = other.onConnected;
-        onDisconnected = other.onDisconnected;
-    }
-
-    WebClient::WebClient(WebClient &&other) noexcept {
-        socket = std::move(other.socket);
-        runThread = other.runThread.load();    
-        other.runThread.store(false);
-        uri = std::move(other.uri);
-        onReceived = std::move(other.onReceived);
-        onConnected = std::move(onConnected);
-        onDisconnected = std::move(onDisconnected);
-    }
-
-    WebClient& WebClient::operator=(const WebClient &other) {
-        if(this != &other) {
-            socket = other.socket;
-            runThread = other.runThread.load();
-            uri = other.uri;
-            onReceived = other.onReceived;
-            onConnected = other.onConnected;
-            onDisconnected = other.onDisconnected;
-        }
-        return *this;
-    }
-
-    WebClient& WebClient::operator=(WebClient &&other) noexcept {
-        if(this != &other) {
-            socket = std::move(other.socket);
-            runThread = other.runThread.load();
-            other.runThread.store(false);
-            uri = std::move(other.uri);
-            onReceived = std::move(other.onReceived);
-            onConnected = std::move(onConnected);
-            onDisconnected = std::move(onDisconnected);
-        }
-        return *this;
-    }
-
-    void WebClient::start() {
-        if (networkThread.joinable() || runThread)
-            return;
-
-        runThread.store(true);
-
-        networkThread = std::thread([this]() { connect(); });
-    }
-
-    void WebClient::stop() {
-        runThread.store(false);
-
-        if (networkThread.joinable())
-            networkThread.join();
-    }
-
-    void WebClient::update() {
-        if(incoming.count() > 0) {
-            Message message;
-            while(incoming.tryDequeue(message)) {
-                if(onReceived)
-                    onReceived(message);
-                message.destroy();
-            }
-        }
-
-        if(events.count() > 0) {
-            wspp::wsclient::EventType event;
-            while(events.tryDequeue(event)) {
-                if(event == wspp::wsclient::EventType::Connected) {
-                    if(onConnected)
-                        onConnected();
-                } else {
-                    if(onDisconnected)
-                        onDisconnected();
-                }
-            }
-        }
-    }
-
-    void WebClient::connect() {
-        incoming.drain();
-        outgoing.drain();
-        events.drain();
-
-        socket = WebSocket(AddressFamily::AFInet, WebSocketOption_None);
+    WebClient::~WebClient() {
+        connection.close();
         
-        if(!socket.connect(uri)) {
-            auto disconnectedEvent = wspp::wsclient::EventType::Disconnected;
-            events.enqueue(disconnectedEvent);
-            socket.close();
-            runThread.store(false);
-            return;
+        bool found = false;
+        size_t index = 0;
+        
+        for(size_t i = 0; i < webClients.size(); i++) {
+            if(webClients[i] == this) {
+                index = i;
+                found = true;
+                break;
+            }
         }
 
-        socket.setNonBlocking();
+        if(found) {
+            webClients.erase(webClients.begin() + index);
+        }
 
-        auto connectedEvent = wspp::wsclient::EventType::Connected;
-        events.enqueue(connectedEvent);
+        wspp::deinitialize();
+    }
 
-        while(runThread) {
-            receiveMessages();
-            sendMessages();
+    bool WebClient::run() {
+        if(isRunning)
+            return false;
+
+        if(uri.size() == 0) {
+            printf("URI is not set\n");
+            return false;
+        }
+
+        if(!connection.connect(uri))
+            return false;
+
+        isRunning = true;
+        
+        connection.setBlocking(false);
+        
+        if(onConnected)
+            onConnected(this);
+
+        while(isRunning) {
+            getMessages();
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
-        socket.close();
+        connection.close();
+
+        return true;
     }
 
-    void WebClient::receiveMessages() {
-        Message message;
-
-        if(socket.receive(&message)) {
-            incoming.enqueue(message);
-        }
+    void WebClient::stop() {
+        isRunning = false;    
     }
 
-    void WebClient::sendMessages() {
-        if(outgoing.count() == 0) {
+    void WebClient::getMessages() {
+        if(!connection.isSet())
             return;
-        }
 
         Message message;
 
-        while(outgoing.tryDequeue(message)) {
-            socket.send(message.opcode, message.chunks->payload, message.chunks->payloadLength, true);
-            message.destroy();
-        }
-    }
+        Result result = connection.receive(&message);
 
-    void WebClient::send(PacketType type, const void *data, size_t size) {
-        if(data == nullptr)
-            return;
+        if(result == Result::Ok) {
+            switch(message.opcode) {
+                case OpCode::Text:
+                case OpCode::Binary:
+                    if(onReceived)
+                        onReceived(this, message);
+                    break;
+                case OpCode::Close:
+                    connection.close();
+                    if(onDisconnected)
+                        onDisconnected(this);
+                    break;
+                default:
+                    break;
+            }
+        }
         
-        if(size == 0)
+        message.destroy();
+    }
+
+    void WebClient::send(OpCode opcode, const void *data, size_t size) {
+        if(!connection.isSet())
             return;
-        
-        Message message;
-        message.opcode = type == PacketType::Binary ? OpCode::Binary : OpCode::Text;
-        message.chunks = new MessageChunk();
-
-        if(message.chunks == nullptr)
-            return;
-
-        message.chunks->payload = new uint8_t[size];
-
-        if(message.chunks->payload == nullptr) {
-            delete message.chunks;
-            return;
-        }
-
-        memcpy(message.chunks->payload, data, size);
-
-        message.chunks->payloadLength = size;
-        message.chunks->next = nullptr;
-
-        outgoing.enqueue(message);
+        connection.send(opcode, data, size, true);
     }
 }
