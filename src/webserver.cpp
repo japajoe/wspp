@@ -44,6 +44,7 @@ namespace wspp {
             signal(SIGPIPE, &onHandleSignal);
         #endif
             signalsRegistered = true;
+            printf("Registered signals\n");
         }
     }
 
@@ -56,6 +57,7 @@ namespace wspp {
         pingTimer = 0;
         isRunning = false;
         clients.resize(configuration.maxClients);
+        webServers.push_back(this);
         registerSignals();
     }
 
@@ -65,6 +67,7 @@ namespace wspp {
         this->pingTimer = 0;
         isRunning = false;
         clients.resize(configuration.maxClients);
+        webServers.push_back(this);
         registerSignals();
     }
 

@@ -50,6 +50,7 @@ namespace wspp {
     WebClient::WebClient() {
         wspp::initialize();
         isRunning = false;
+        webClients.push_back(this);
         registerSignals();
     }
 
