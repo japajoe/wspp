@@ -18,7 +18,7 @@ include_directories(
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 
-target_link_libraries(${PROJECT_NAME} -pthread ${OPENSSL_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} ${OPENSSL_LIBRARIES})
 
 install(TARGETS ${PROJECT_NAME} DESTINATION /usr/local/lib)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/ DESTINATION /usr/local/include/wspp)

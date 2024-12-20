@@ -44,7 +44,6 @@ namespace wspp {
             signal(SIGPIPE, &onHandleSignal);
         #endif
             signalsRegistered = true;
-            printf("Registered signals\n");
         }
     }
 
