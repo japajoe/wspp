@@ -59,23 +59,22 @@ namespace wspp {
 
     Message::Message() {
         opcode = OpCode::Continuation;
-        chunks = nullptr;
     }
 
     Message::Message(const Message &other) noexcept {
         opcode = other.opcode;
-        chunks = other.chunks;
+        payload = other.payload;
     }
 
     Message::Message(Message &&other) {
         opcode = other.opcode;
-        chunks = std::exchange(other.chunks, nullptr);
+        payload = std::move(other.payload);
     }
 
     Message& Message::operator=(const Message &other) {
         if(this != &other) {
             opcode = other.opcode;
-            chunks = other.chunks;
+            payload = other.payload;
         }
         return *this;
     }
@@ -83,73 +82,28 @@ namespace wspp {
     Message& Message::operator=(Message &&other) noexcept {
         if(this != &other) {
             opcode = other.opcode;
-            chunks = std::exchange(other.chunks, nullptr);
+            payload = std::move(other.payload);
         }
         return *this;
     }
 
-    void Message::destroy() {
-        MessageChunk *current = chunks;
-        
-        while (current != nullptr) {
-            if(current->payload)
-                delete[] current->payload;
-            MessageChunk *previous = current;
-            current = current->next;
-            delete previous;
-        }
-
-        chunks = nullptr;
-    }
-
     bool Message::getText(std::string &s) {
-        MessageChunk *chunk = chunks;
-        bool success = false;
+        if(payload.size() == 0)
+            return false;
 
-        while(chunk) {
-            char *payload = (char*)chunk->payload;
-            if(payload == nullptr) {
-                printf("Message::getText: payload = nullptr\n");
-                return false;
-            }
+        char *ptr = (char*)payload.data();
 
-            if(chunk->payloadLength == 0) {
-                printf("Message::getText: payloadLength = 0\n");
-                return false;
-            }
+        s = std::string(ptr, payload.size());
 
-            s += std::string(payload, chunk->payloadLength);
-            chunk = chunk->next;
-            success = true;
-        }
-
-        return success;
+        return true;
     }
 
     bool Message::getRaw(std::vector<uint8_t> &data) {
-        MessageChunk *chunk = chunks;
-        size_t totalSize = 0;
+        if(payload.size() == 0)
+            return false;
 
-        while(chunk) {
-            totalSize += chunk->payloadLength;
-            chunk = chunk->next;
-        }
-
-        size_t index = 0;
-
-        if(totalSize > 0) {
-            data.resize(totalSize);
-
-            chunk = chunks;
-
-            while(chunk) {
-                memcpy(&data[index], chunk->payload, chunk->payloadLength);
-                index += chunk->payloadLength;
-                chunk = chunk->next;
-            }
-        }
-
-        return data.size() > 0;
+        data.insert(data.end(), payload.begin(), payload.end());
+        return true;
     }
 
     ///////////////
@@ -774,11 +728,6 @@ namespace wspp {
             return (opcode == 0x8 || opcode == 0x9 || opcode == 0xA);
         };
 
-        auto cleanUp = [] (Frame *f) -> void {
-            if(f->payload)
-                delete[] f->payload;
-        };
-
         //Loop and collect frames until we get to the 'fin' frame or run into an error
         while(!messageComplete) {
             uint8_t peekData = 0;
@@ -786,7 +735,6 @@ namespace wspp {
 
             //If there is no data to read we can return early
             if(peekedBytes <= 0) {
-                message.destroy();
                 return (peekedBytes == 0) ? Result::NoData : Result::ConnectionError;
             }
 
@@ -795,7 +743,6 @@ namespace wspp {
             Result result = readFrame(&frame);
             
             if(result != Result::Ok) {
-                message.destroy();
                 return result;
             }
 
@@ -806,46 +753,21 @@ namespace wspp {
                 case OpCode::Binary: {
                     message.opcode = opcode;
 
-                    if(message.chunks == nullptr) {
-                        message.chunks = new MessageChunk();
-
-                        if(message.chunks == nullptr) {
-                            writeError("WebSocket::receive: message.chunks = nullptr");
-                            cleanUp(&frame);
-                            return Result::AllocationError;
-                        }
-
-                        message.chunks->payloadLength = frame.payloadLength;
-                        message.chunks->payload = frame.payload;
-                        message.chunks->next = nullptr;
+                    if(message.payload.size() == 0 && frame.payloadLength > 0) {
+                        message.payload.insert(message.payload.end(), frame.payload.begin(), frame.payload.end());
                     } else {
                         //This shouldn't happen
-                        cleanUp(&frame);
+                        return Result::NoData;
                     }
 
                     break;
                 }
                 case OpCode::Continuation: {
-                    if(message.chunks != nullptr) {
-                        MessageChunk *lastChunk = message.chunks;
-                        while (lastChunk->next != nullptr) {
-                            lastChunk = lastChunk->next;
-                        }
-                        lastChunk->next = new MessageChunk();
-
-                        if(lastChunk->next == nullptr) {
-                            writeError("WebSocket::receive: lastChunk->next = nullptr");
-                            cleanUp(&frame);
-                            message.destroy();
-                            return Result::AllocationError;
-                        }
-
-                        lastChunk->next->payloadLength = frame.payloadLength;
-                        lastChunk->next->payload = nullptr;
-                        lastChunk->next->next = nullptr;
+                    if(message.payload.size() > 0 && frame.payloadLength > 0) {
+                        message.payload.insert(message.payload.end(), frame.payload.begin(), frame.payload.end());
                     } else {
                         //This shouldn't happen
-                        cleanUp(&frame);
+                        return Result::NoData;
                     }
 
                     break;
@@ -861,31 +783,24 @@ namespace wspp {
                     break;
                 }
                 default: {
-                    cleanUp(&frame);
-                    message.destroy();
                     return Result::InvalidOpCode;
                 }
             }
 
             if(frame.fin) {
                 if(isControlFrameOpcode(frame.opcode)) {
-                    if(frame.payload)
-                        delete[] frame.payload;
-
                     Message m;
                     m.opcode = static_cast<OpCode>(frame.opcode);
                     if(onReceived)
                         onReceived(this, m);
 
-                    if(message.chunks == nullptr) {
+                    if(message.payload.size() == 0) {
                         messageComplete = true;
                         break;
                     }
                 } else {
                     if(onReceived)
                         onReceived(this, message);
-                    else
-                        message.destroy();
                     messageComplete = true;
                     break;
                 }
@@ -904,8 +819,6 @@ namespace wspp {
         return ::recv(s.fd, buffer, size, 0);
     #endif
     }
-
-
 
     ssize_t WebSocket::write(const void *buffer, size_t size) {
         if(ssl)
@@ -1122,22 +1035,11 @@ namespace wspp {
         }
 
         if(frame->payloadLength > 0) {
-            //printf("Allocating memory: %zu\n", frame->payloadLength);
-
-            frame->payload = new uint8_t[frame->payloadLength];
+            frame->payload.resize(frame->payloadLength);
             
-            if(frame->payload == nullptr) {
-                writeError("WebSocket::readFrame: frame->payload = nullptr");
-                //If we make it here, make sure to 'consume' remaining data
-                drain(frame->payloadLength);
-                return Result::AllocationError;
-            }
+            memset(&frame->payload[0], 0, frame->payloadLength);
             
-            memset(frame->payload, 0, frame->payloadLength);
-            
-            if(!readAllBytes(frame->payload, frame->payloadLength)) {
-                delete[] frame->payload;
-                frame->payload = nullptr;
+            if(!readAllBytes(&frame->payload[0], frame->payloadLength)) {
                 frame->payloadLength = 0;
                 return Result::ConnectionError;
             }
@@ -1148,9 +1050,7 @@ namespace wspp {
             }
 
             if(frame->opcode == 0x1) {
-                if(!isValidUTF8(frame->payload, frame->payloadLength)) {
-                    delete[] frame->payload;
-                    frame->payload = nullptr;
+                if(!isValidUTF8(&frame->payload[0], frame->payloadLength)) {
                     frame->payloadLength = 0;
                     return Result::UTF8Error;
                 }

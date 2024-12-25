@@ -82,7 +82,7 @@ namespace wspp {
         void sendTo(Client &client, OpCode opcode, const void *data, size_t size);
         void sendAll(OpCode opcode, const void *data, size_t size);
         void onHandleError(const std::string &message);
-        void onMessageReceived(const WebSocket *socket, Message message);
+        void onMessageReceived(const WebSocket *socket, Message &message);
     };
 }
 

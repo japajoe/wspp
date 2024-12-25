@@ -151,7 +151,7 @@ namespace wspp {
                 client.connection.setBlocking(false);
                 client.lastPong = 0;
                 client.id = static_cast<uint32_t>(i);
-                client.connection.onReceived = [this] (const WebSocket *socket, Message message) {
+                client.connection.onReceived = [this] (const WebSocket *socket, Message &message) {
                     onMessageReceived(socket, message);
                 };
 
@@ -228,7 +228,7 @@ namespace wspp {
             onError(message);
     }
 
-    void WebServer::onMessageReceived(const WebSocket *socket, Message message) {
+    void WebServer::onMessageReceived(const WebSocket *socket, Message &message) {
         Client *client = nullptr;
 
         for(size_t i = 0; i < clients.size(); i++) {
@@ -239,7 +239,6 @@ namespace wspp {
         }
 
         if(client == nullptr) {
-            message.destroy();
             return;
         }
 
@@ -262,7 +261,5 @@ namespace wspp {
                 printf("Received invalid opcode: %zu\n", static_cast<int>(message.opcode));
                 break;
         }
-
-        message.destroy();
     }
 }

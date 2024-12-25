@@ -56,7 +56,7 @@ namespace wspp {
         bool isRunning;
         void getMessages();
         void onHandleError(const std::string &message);
-        void onMessageReceived(const WebSocket *socket, Message message);
+        void onMessageReceived(const WebSocket *socket, Message &message);
     };
 }
 

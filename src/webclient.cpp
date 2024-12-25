@@ -57,7 +57,7 @@ namespace wspp {
             onHandleError(message);
         };
         
-        connection.onReceived = [this] (const WebSocket *socket, Message message) {
+        connection.onReceived = [this] (const WebSocket *socket, Message &message) {
             onMessageReceived(socket, message);
         };
     }
@@ -73,7 +73,7 @@ namespace wspp {
             onHandleError(message);
         };
         
-        connection.onReceived = [this] (const WebSocket *socket, Message message) {
+        connection.onReceived = [this] (const WebSocket *socket, Message &message) {
             onMessageReceived(socket, message);
         };
     }
@@ -157,7 +157,7 @@ namespace wspp {
             onError(message);
     }
 
-    void WebClient::onMessageReceived(const WebSocket *socket, Message message) {
+    void WebClient::onMessageReceived(const WebSocket *socket, Message &message) {
         switch(message.opcode) {
             case OpCode::Text:
             case OpCode::Binary:
@@ -172,7 +172,5 @@ namespace wspp {
             default:
                 break;
         }
-
-        message.destroy();
     }
 }

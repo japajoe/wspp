@@ -135,16 +135,29 @@ namespace wspp {
         uint8_t *payload;
     };
 
+    // class Message {
+    // public:
+    //     OpCode opcode;
+    //     MessageChunk *chunks;
+    //     Message();
+    //     Message(const Message &other) noexcept;
+    //     Message(Message &&other);
+    //     Message& operator=(const Message &other);
+    //     Message& operator=(Message &&other) noexcept;
+    //     void destroy();
+    //     bool getText(std::string &s);
+    //     bool getRaw(std::vector<uint8_t> &data);
+    // };
+
     class Message {
     public:
         OpCode opcode;
-        MessageChunk *chunks;
+        std::vector<uint8_t> payload;
         Message();
         Message(const Message &other) noexcept;
         Message(Message &&other);
         Message& operator=(const Message &other);
         Message& operator=(Message &&other) noexcept;
-        void destroy();
         bool getText(std::string &s);
         bool getRaw(std::vector<uint8_t> &data);
     };
@@ -155,8 +168,8 @@ namespace wspp {
         uint8_t RSV2;
         uint8_t RSV3;
         uint8_t opcode;
-        uint8_t *payload;
         uint64_t payloadLength;
+        std::vector<uint8_t> payload;
     };
 
     void initialize();
@@ -165,7 +178,7 @@ namespace wspp {
     using ErrorCallback = std::function<void(const std::string &message)>;
 
     class WebSocket;
-    using MessageReceivedCallback = std::function<void(const WebSocket *socket, Message message)>;
+    using MessageReceivedCallback = std::function<void(const WebSocket *socket, Message &message)>;
 
     class WebSocket {
     public:
