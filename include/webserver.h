@@ -32,9 +32,14 @@
 namespace wspp {
     class WebServer;
 
+    enum class DisconnectReason {
+        TimeOut,
+        ConnectionClosed
+    };
+
     using ServerReceivedCallback = std::function<void(WebServer *server, uint32_t clientId, Message &message)>;
     using ServerConnectedCallback = std::function<void(WebServer *server, uint32_t clientId)>;
-    using ServerDisconnectedCallback = std::function<void(WebServer *server, uint32_t clientId)>;
+    using ServerDisconnectedCallback = std::function<void(WebServer *server, uint32_t clientId, DisconnectReason reason)>;
 
     struct Configuration {
         uint32_t maxClients;
@@ -56,6 +61,7 @@ namespace wspp {
         ServerReceivedCallback onReceived;
         ServerConnectedCallback onConnected;
         ServerDisconnectedCallback onDisconnected;
+        ErrorCallback onError;
         WebServer();
         WebServer(const Configuration &configuration);
         ~WebServer();
@@ -70,10 +76,13 @@ namespace wspp {
         Configuration configuration;
         bool isRunning;
         void acceptConnections();
+        void acceptConnection(WebSocket &connection);
         void getMessages();
         void sendPings();
         void sendTo(Client &client, OpCode opcode, const void *data, size_t size);
         void sendAll(OpCode opcode, const void *data, size_t size);
+        void onHandleError(const std::string &message);
+        void onMessageReceived(const WebSocket *socket, Message message);
     };
 }
 

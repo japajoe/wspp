@@ -58,6 +58,9 @@ namespace wspp {
         clients.resize(configuration.maxClients);
         webServers.push_back(this);
         registerSignals();
+        listener.onError = [this] (const std::string &message) {
+            onHandleError(message);
+        };
     }
 
     WebServer::WebServer(const Configuration &configuration) {
@@ -68,6 +71,9 @@ namespace wspp {
         clients.resize(configuration.maxClients);
         webServers.push_back(this);
         registerSignals();
+        listener.onError = [this] (const std::string &message) {
+            onHandleError(message);
+        };
     }
 
     WebServer::~WebServer() {
@@ -89,6 +95,8 @@ namespace wspp {
         }
 
         wspp::deinitialize();
+
+        listener.onError = nullptr;
     }
 
     bool WebServer::run() {
@@ -117,6 +125,8 @@ namespace wspp {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
+        broadcast(OpCode::Close, nullptr, 0);
+
         listener.close();
 
         return true;
@@ -141,9 +151,9 @@ namespace wspp {
                 client.connection.setBlocking(false);
                 client.lastPong = 0;
                 client.id = static_cast<uint32_t>(i);
-
-                std::string response = "Hello from server";
-                sendTo(client, OpCode::Text, response.c_str(), response.size());
+                client.connection.onReceived = [this] (const WebSocket *socket, Message message) {
+                    onMessageReceived(socket, message);
+                };
 
                 if(onConnected)
                     onConnected(this, client.id);
@@ -161,31 +171,7 @@ namespace wspp {
             if(!client.connection.isSet())
                 continue;
 
-            Message message;
-
-            Result result = client.connection.receive(&message);
-
-            if(result == Result::Ok) {
-                switch(message.opcode) {
-                    case OpCode::Text:
-                    case OpCode::Binary:
-                        if(onReceived)
-                            onReceived(this, client.id, message);
-                        break;
-                    case OpCode::Close:
-                        client.connection.close();
-                        if(onDisconnected)
-                            onDisconnected(this, client.id);
-                        break;
-                    case OpCode::Pong:
-                        client.lastPong = 0;
-                        break;
-                    default:
-                        break;
-                }
-            }
-            
-            message.destroy();
+            Result result = client.connection.receive();
         }
     }
 
@@ -204,8 +190,9 @@ namespace wspp {
 
                 if(client.lastPong >= 45000) {
                     client.connection.close();
+                    client.connection.onReceived = nullptr;
                     if(onDisconnected)
-                        onDisconnected(this, client.id);
+                        onDisconnected(this, client.id, DisconnectReason::TimeOut);
                 }
             }
         }
@@ -234,5 +221,48 @@ namespace wspp {
                 continue;
             client.connection.send(opcode, data, size, false);
         }
+    }
+
+    void WebServer::onHandleError(const std::string &message) {
+        if(onError)
+            onError(message);
+    }
+
+    void WebServer::onMessageReceived(const WebSocket *socket, Message message) {
+        Client *client = nullptr;
+
+        for(size_t i = 0; i < clients.size(); i++) {
+            if(clients[i].connection.getFileDescriptor() == socket->getFileDescriptor()) {
+                client = &clients[i];
+                break;
+            }
+        }
+
+        if(client == nullptr) {
+            message.destroy();
+            return;
+        }
+
+        switch(message.opcode) {
+            case OpCode::Text:
+            case OpCode::Binary:
+                if(onReceived)
+                    onReceived(this, client->id, message);
+                break;
+            case OpCode::Close:
+                client->connection.close();
+                client->connection.onReceived = nullptr;
+                if(onDisconnected)
+                    onDisconnected(this, client->id, DisconnectReason::ConnectionClosed);
+                break;
+            case OpCode::Pong:
+                client->lastPong = 0;
+                break;
+            default:
+                printf("Received invalid opcode: %zu\n", static_cast<int>(message.opcode));
+                break;
+        }
+
+        message.destroy();
     }
 }

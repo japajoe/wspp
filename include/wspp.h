@@ -33,6 +33,7 @@
 #include <unordered_map>
 #include <sstream>
 #include <chrono>
+#include <functional>
 
 #ifdef _WIN32
 #ifdef _WIN32_WINNT
@@ -48,6 +49,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netdb.h>
@@ -113,16 +115,7 @@ namespace wspp {
         Reserved10 = 0xF,
     };
 
-    struct Frame {
-        uint8_t fin;
-        uint8_t RSV1;
-        uint8_t RSV2;
-        uint8_t RSV3;
-        uint8_t opcode;
-        uint8_t maskingKey[4];  //Only present if the client is sending data (server-to-client frames don’t have a mask).
-        uint64_t payloadLength; //Payload length: 1 byte for lengths 0-125, 2 bytes for lengths up to 65535, and 8 bytes for very large messages.
-        uint8_t *payload;       //Payload data: The actual data, which may need to be unmasked.
-    };
+
 
     using Headers = std::unordered_map<std::string,std::string>;
 
@@ -131,7 +124,9 @@ namespace wspp {
         NoData = 1,
         ConnectionError = 2,
         AllocationError = 3,
-        UTF8Error = 4
+        UTF8Error = 4,
+        InvalidOpCode = 5,
+        InvalidArgument = 6
     };
 
     struct MessageChunk {
@@ -154,11 +149,28 @@ namespace wspp {
         bool getRaw(std::vector<uint8_t> &data);
     };
 
+    struct Frame {
+        uint8_t fin;
+        uint8_t RSV1;
+        uint8_t RSV2;
+        uint8_t RSV3;
+        uint8_t opcode;
+        uint8_t *payload;
+        uint64_t payloadLength;
+    };
+
     void initialize();
     void deinitialize();
 
+    using ErrorCallback = std::function<void(const std::string &message)>;
+
+    class WebSocket;
+    using MessageReceivedCallback = std::function<void(const WebSocket *socket, Message message)>;
+
     class WebSocket {
     public:
+        ErrorCallback onError;
+        MessageReceivedCallback onReceived;
         WebSocket();
         WebSocket(AddressFamily addressFamily);
         WebSocket(AddressFamily addressFamily, const std::string &certificatePath, const std::string &privateKeyPath);
@@ -174,8 +186,8 @@ namespace wspp {
         void close();
         bool setOption(int level, int option, const void *value, uint32_t valueSize);
         void setBlocking(bool isBlocking);
-        Result send(OpCode opcode, const void *data, size_t size, bool masked);
-        Result receive(Message *message);
+        Result send(OpCode opcode, const void *data, uint64_t size, bool masked);
+        Result receive();
         int32_t getFileDescriptor() const { return s.fd; }
         bool isSet() const { return s.fd >= 0; }
     private:
@@ -185,6 +197,9 @@ namespace wspp {
         ssize_t read(void *buffer, size_t size);
         ssize_t write(const void *buffer, size_t size);
         ssize_t peek(void *buffer, size_t size);
+        bool readAllBytes(void *buffer, size_t size);
+        bool writeAllBytes(const void *buffer, size_t size);
+        bool drain(size_t size);
         Result writeFrame(OpCode opcode, bool fin, const void *payload, uint64_t payloadSize, bool applyMask);
         Result readFrame(Frame *frame);
         void sendBadRequest(WebSocket &connection);
@@ -198,6 +213,7 @@ namespace wspp {
         std::string generateAcceptKey(const std::string &websocketKey);
         bool verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey);
         bool isValidUTF8(const void *payload, size_t size);
+        void writeError(const std::string &message);
     };
 
     namespace URI {

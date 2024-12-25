@@ -52,6 +52,14 @@ namespace wspp {
         isRunning = false;
         webClients.push_back(this);
         registerSignals();
+        
+        connection.onError = [this] (const std::string &message) {
+            onHandleError(message);
+        };
+        
+        connection.onReceived = [this] (const WebSocket *socket, Message message) {
+            onMessageReceived(socket, message);
+        };
     }
 
     WebClient::WebClient(const std::string &uri) {
@@ -60,6 +68,14 @@ namespace wspp {
         isRunning = false;
         webClients.push_back(this);
         registerSignals();
+        
+        connection.onError = [this] (const std::string &message) {
+            onHandleError(message);
+        };
+        
+        connection.onReceived = [this] (const WebSocket *socket, Message message) {
+            onMessageReceived(socket, message);
+        };
     }
 
     WebClient::~WebClient() {
@@ -81,6 +97,8 @@ namespace wspp {
         }
 
         wspp::deinitialize();
+        connection.onError = nullptr;
+        connection.onReceived = nullptr;
     }
 
     bool WebClient::run() {
@@ -98,14 +116,19 @@ namespace wspp {
         isRunning = true;
         
         connection.setBlocking(false);
+
         
         if(onConnected)
             onConnected(this);
 
         while(isRunning) {
             getMessages();
+            if(onTick)
+                onTick(this);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+
+        send(OpCode::Close, nullptr, 0);
 
         connection.close();
 
@@ -120,33 +143,36 @@ namespace wspp {
         if(!connection.isSet())
             return;
 
-        Message message;
-
-        Result result = connection.receive(&message);
-
-        if(result == Result::Ok) {
-            switch(message.opcode) {
-                case OpCode::Text:
-                case OpCode::Binary:
-                    if(onReceived)
-                        onReceived(this, message);
-                    break;
-                case OpCode::Close:
-                    connection.close();
-                    if(onDisconnected)
-                        onDisconnected(this);
-                    break;
-                default:
-                    break;
-            }
-        }
-        
-        message.destroy();
+        Result result = connection.receive();
     }
 
     void WebClient::send(OpCode opcode, const void *data, size_t size) {
         if(!connection.isSet())
             return;
         connection.send(opcode, data, size, true);
+    }
+
+    void WebClient::onHandleError(const std::string &message) {
+        if(onError)
+            onError(message);
+    }
+
+    void WebClient::onMessageReceived(const WebSocket *socket, Message message) {
+        switch(message.opcode) {
+            case OpCode::Text:
+            case OpCode::Binary:
+                if(onReceived)
+                    onReceived(this, message);
+                break;
+            case OpCode::Close:
+                connection.close();
+                if(onDisconnected)
+                    onDisconnected(this);
+                break;
+            default:
+                break;
+        }
+
+        message.destroy();
     }
 }

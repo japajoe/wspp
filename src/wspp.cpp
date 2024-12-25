@@ -27,7 +27,32 @@
 #include <regex>
 #include <utility>
 
+#include <iostream>
+#include <iomanip>
+
 namespace wspp {
+    void dumpFrame(OpCode opcode, const uint8_t *data, size_t size) {
+        // Check if the data pointer is null
+        if (data == nullptr) {
+            std::cout << "No data to display." << std::endl;
+            return;
+        }
+
+        std::cout << "OpCode: " << static_cast<int>(opcode) << '\n';
+
+        // Iterate through each byte in the data
+        for (size_t i = 0; i < size; ++i) {
+            // Print each byte in hexadecimal format
+            std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i]) << " ";
+            
+            // Optionally, print a newline every 16 bytes for better readability
+            if ((i + 1) % 16 == 0) {
+                std::cout << std::endl;
+            }
+        }
+        std::cout << std::dec << std::endl; // Reset to decimal format
+    }
+
     ///////////////
     ///[Message]///
     ///////////////
@@ -67,7 +92,8 @@ namespace wspp {
         MessageChunk *current = chunks;
         
         while (current != nullptr) {
-            delete[] current->payload;
+            if(current->payload)
+                delete[] current->payload;
             MessageChunk *previous = current;
             current = current->next;
             delete previous;
@@ -82,6 +108,16 @@ namespace wspp {
 
         while(chunk) {
             char *payload = (char*)chunk->payload;
+            if(payload == nullptr) {
+                printf("Message::getText: payload = nullptr\n");
+                return false;
+            }
+
+            if(chunk->payloadLength == 0) {
+                printf("Message::getText: payloadLength = 0\n");
+                return false;
+            }
+
             s += std::string(payload, chunk->payloadLength);
             chunk = chunk->next;
             success = true;
@@ -145,12 +181,49 @@ namespace wspp {
     #endif
     }
 
+    //Function to check if this system is little or big endian
+    static bool isLittleEndian() {
+        uint16_t num = 1;
+        uint8_t* ptr = reinterpret_cast<uint8_t*>(&num);
+        return ptr[0] == 1; // If the least significant byte is 1, it's little-endian
+    }
+
+    static void swapBytes(void *buffer, size_t size) {
+        if(size < 2)
+            return;
+        
+        uint8_t *bytes = reinterpret_cast<uint8_t*>(buffer);
+
+        for (size_t i = 0; i < size / 2; ++i) {
+            uint8_t temp = bytes[i];
+            bytes[i] = bytes[size - i - 1];
+            bytes[size - i - 1] = temp;
+        }
+    }
+
+    //The following 2 methods do the same thing but it helps readability
+    static void networkToHostOrder(void *src, void *dest, size_t size) {
+        if(isLittleEndian()) {
+            swapBytes(src, size);
+        }
+        memcpy(dest, src, size);
+    }
+
+    static void hostToNetworkOrder(void *src, void *dest, size_t size) {
+        if(isLittleEndian()) {
+            swapBytes(src, size);
+        }
+        memcpy(dest, src, size);
+    }
+
     WebSocket::WebSocket() {
         memset(&s, 0, sizeof(socket_t));
         s.fd = -1;
         s.addressFamily = AddressFamily::AFInet;
         sslContext = nullptr;
         ssl = nullptr;
+        onError = nullptr;
+        onReceived = nullptr;
     }
 
     WebSocket::WebSocket(AddressFamily addressFamily) {
@@ -159,6 +232,8 @@ namespace wspp {
         s.addressFamily = addressFamily;
         sslContext = nullptr;
         ssl = nullptr;
+        onError = nullptr;
+        onReceived = nullptr;
     }
 
     WebSocket::WebSocket(AddressFamily addressFamily, const std::string &certificatePath, const std::string &privateKeyPath) {
@@ -167,6 +242,8 @@ namespace wspp {
         s.addressFamily = addressFamily;
         sslContext = nullptr;
         ssl = nullptr;
+        onError = nullptr;
+        onReceived = nullptr;
 
         sslContext = SSL_CTX_new(TLS_server_method());
 
@@ -195,6 +272,8 @@ namespace wspp {
         s.addressFamily = other.s.addressFamily;
         sslContext = other.sslContext;
         ssl = other.ssl;
+        onError = other.onError;
+        onReceived = other.onReceived;
     }
 
     WebSocket::WebSocket(WebSocket &&other) noexcept {
@@ -202,6 +281,8 @@ namespace wspp {
         other.s.fd = -1;
         sslContext = std::exchange(other.sslContext, nullptr);
         ssl = std::exchange(other.ssl, nullptr);
+        onError = std::exchange(other.onError, nullptr);
+        onReceived = std::exchange(other.onReceived, nullptr);
     }
 
     WebSocket::~WebSocket() {
@@ -213,6 +294,8 @@ namespace wspp {
             s = other.s;
             sslContext = other.sslContext;
             ssl = other.ssl;
+            onError = other.onError;
+            onReceived = other.onReceived;
         }
         return *this;
     }
@@ -223,6 +306,8 @@ namespace wspp {
             other.s.fd = -1;
             sslContext = std::exchange(other.sslContext, nullptr);
             ssl = std::exchange(other.ssl, nullptr);
+            onError = std::exchange(other.onError, nullptr);
+            onReceived = std::exchange(other.onReceived, nullptr);
         }
         return *this;
     }
@@ -230,8 +315,10 @@ namespace wspp {
     bool WebSocket::bind(const std::string &bindAddress, uint16_t port) {
         if(s.fd < 0) {
             int32_t newfd = ::socket(static_cast<int>(s.addressFamily), SOCK_STREAM, 0);
-            if(newfd < 0)
+            if(newfd < 0) {
+                writeError("WebSocket::bind: failed to create socket");
                 return false;
+            }
             s.fd = newfd;
         }
 
@@ -243,13 +330,17 @@ namespace wspp {
 
             // If you want to bind to a specific address, use inet_pton
             if (inet_pton(AF_INET, bindAddress.c_str(), &address.sin_addr) <= 0) {
+                writeError("WebSocket::bind: failed set bind address");
                 return false;
             }
 
             memcpy(&s.address.ipv4, &address, sizeof(sockaddr_in));
 
-            int reuse = 1;
-            setOption(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+            int reuseFlag = 1;
+            setOption(SOL_SOCKET, SO_REUSEADDR, &reuseFlag, sizeof(int));
+
+            int noDelayFlag = 1;
+            setOption(IPPROTO_TCP, TCP_NODELAY, (char *)&noDelayFlag, sizeof(int));
 
             return ::bind(s.fd, (struct sockaddr*)&address, sizeof(address)) == 0;
         } else if (s.addressFamily == AddressFamily::AFInet6) {
@@ -260,6 +351,7 @@ namespace wspp {
 
             // If you want to bind to a specific address, use inet_pton
             if (inet_pton(AF_INET6, bindAddress.c_str(), &address.sin6_addr) <= 0) {
+                writeError("WebSocket::bind: failed set bind address");
                 return false;
             }
 
@@ -271,23 +363,27 @@ namespace wspp {
             return ::bind(s.fd, (struct sockaddr*)&address, sizeof(address)) == 0;
         }
 
+        writeError("WebSocket::bind: invalid address family");
+
         return false;
     }
 
     bool WebSocket::listen(int32_t backlog) {
-        if(s.fd < 0)
+        if(s.fd < 0) {
+            writeError("WebSocket::listen: failed to listen because socket isn't initialized");
             return false;
+        }
         return ::listen(s.fd, backlog) == 0;
     }
 
     bool WebSocket::accept(WebSocket &client) {
         if(s.fd < 0) {
-            printf("Socket is not initialized\n");
+            writeError("WebSocket::accept: failed to accept because socket isn't initialized");
             return false;
         }
 
         if(client.s.fd >= 0) {
-            printf("Can not accept socket because it is already initialized\n");
+            writeError("WebSocket::accept: failed to accept client because its socket is already initialized");
             return false;
         }
 
@@ -302,7 +398,6 @@ namespace wspp {
     #endif
         
         if(client.s.fd < 0) {
-            //printf("Failed to accept socket: %s\n", strerror(errno));
             return false;
         }
         
@@ -314,6 +409,7 @@ namespace wspp {
             client.s.addressFamily = AddressFamily::AFInet6;
         } else {
             printf("Unknown address family\n");
+            writeError("WebSocket::accept: failed to set client address family");
             client.close();
             return false;
         }
@@ -322,7 +418,7 @@ namespace wspp {
             client.ssl = SSL_new(sslContext);
             
             if(client.ssl == nullptr) {
-                printf("Failed to create SSL\n");
+                writeError("WebSocket::accept: failed to create client SSL");
                 client.close();
                 return false;
             }
@@ -330,7 +426,7 @@ namespace wspp {
             SSL_set_fd(client.ssl, client.s.fd);
 
             if (SSL_accept(client.ssl) <= 0) {
-                printf("Failed to set SSL file descriptor\n");
+                writeError("WebSocket::accept: failed to set client SSL file descriptor");
                 SSL_shutdown(client.ssl);
                 SSL_free(client.ssl);
                 client.ssl = nullptr;
@@ -344,19 +440,19 @@ namespace wspp {
         HttpMethod method;
 
         if(!readHeader(client, header)) {
-            printf("Failed to read header\n");
+            writeError("WebSocket::accept: failed to read header");
             sendBadRequest(client);
             return false;
         }
 
         if(!readMethod(header, method)) {
-            printf("Failed to read method from header\n");
+            writeError("WebSocket::accept: failed read HTTP method from header");
             sendBadRequest(client);
             return false;
         }
         
         if(!readPath(header, path)) {
-            printf("Failed to read path from header\n");
+            writeError("WebSocket::accept: failed to read path from header");
             sendBadRequest(client);
             return false;
         }
@@ -364,13 +460,13 @@ namespace wspp {
         Headers headers;
         
         if(!readHeaderFields(header, headers)) {
-            printf("Failed to read header fields\n");
+            writeError("WebSocket::accept: failed to read header fields");
             sendBadRequest(client);
             return false;
         }
 
         if(method != HttpMethod::GET) {
-            printf("Unsupported method\n");
+            writeError("WebSocket::accept: invalid HTTP method");
             sendBadRequest(client);
             return false;
         }
@@ -381,7 +477,7 @@ namespace wspp {
 
         for (const auto &key : requiredHeaders) {
             if (headers.count(key) == 0) {
-                printf("Missing required header fieldL %s\n", key.c_str());
+                writeError("WebSocket::accept: missing required header field: " + key);
                 sendBadRequest(client);
                 return false;
             }
@@ -393,19 +489,19 @@ namespace wspp {
         std::string webKey = headers["Sec-WebSocket-Key"];
 
         if(upgrade != "websocket") {
-            printf("Failed to find websocket\n");
+            writeError("WebSocket::accept: failed to find 'websocket'");
             sendBadRequest(client);
             return false;
         }
 
         if(!String::contains(connection, "Upgrade")) {
-            printf("Failed to find upgrade request\n");
+            writeError("WebSocket::accept: failed to find 'Upgrade'");
             sendBadRequest(client);
             return false;
         }
 
         if(version != "13") {
-            printf("Version mismatch\n");
+            writeError("WebSocket::accept: version mismatch");
             sendBadRequest(client);
             return false;
         }
@@ -421,7 +517,7 @@ namespace wspp {
         ssize_t sentBytes = client.write(response.data(), response.size());
 
         if(sentBytes <= 0) {
-            printf("Failed to send handshake response\n");
+            writeError("WebSocket::accept: failed to send handshake response");
             client.close();
             return false;
         }
@@ -441,14 +537,14 @@ namespace wspp {
         std::string scheme;
 
         if(!URI::getScheme(URL, scheme)) {
-            printf("Failed to determine scheme from URI %s\n", URL.c_str());
+            writeError("WebSocket::connect: failed to determine scheme from URI " + URL);
             return false;
         }
 
         std::string path;
 
         if(!URI::getPath(URL, path)) {
-            printf("Failed to determine path from URI %s\n", URL.c_str());
+            writeError("WebSocket::connect: failed to determine path from URI " + URL);
             return false;
         }
 
@@ -458,13 +554,14 @@ namespace wspp {
         
         if(!resolve(URL, ip, port, hostName)) {
             printf("Failed to resolve IP from URI %s\n", URL.c_str());
+            writeError("WebSocket::connect: failed to resolve IP from URI " + URL);
             return false;
         }
 
         IPVersion ipVersion = detectIPVersion(ip);
 
         if(ipVersion == IPVersion::Invalid) {
-            printf("Invalid IP version\n");
+            writeError("WebSocket::connect: invalid IP version");
             return false;
         }
         
@@ -473,7 +570,7 @@ namespace wspp {
         s.fd = socket(static_cast<int>(addressFamily), SOCK_STREAM, 0);
 
         if(s.fd < 0) {
-            printf("Failed to create socket\n");
+            writeError("WebSocket::connect: failed to create socket");
             return false;
         }
 
@@ -494,7 +591,7 @@ namespace wspp {
         }
 
         if(connectionResult < 0) {
-            printf("Failed to connect\n");
+            writeError("WebSocket::connect: failed to connect");
             close();
             return false;
         }
@@ -503,7 +600,7 @@ namespace wspp {
             sslContext = SSL_CTX_new(TLS_method());
 
             if(sslContext == nullptr) {
-                printf("Failed to create SSL context\n");
+                writeError("WebSocket::connect: failed to create SSL context");
                 close();
                 return false;
             }
@@ -511,7 +608,7 @@ namespace wspp {
             ssl = SSL_new(sslContext);
 
             if(ssl == nullptr) {
-                printf("Failed to create SSL\n");
+                writeError("WebSocket::connect: failed to create SSL");
                 close();
                 return false;
             }
@@ -521,7 +618,7 @@ namespace wspp {
             SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, (void*)hostName.c_str());
 
             if (SSL_connect(ssl) != 1) {
-                printf("Failed to SSL connect\n");
+                writeError("WebSocket::connect: failed to SSL connect");
                 close();
                 return false;
             }
@@ -538,7 +635,7 @@ namespace wspp {
         request += "Sec-WebSocket-Version: 13\r\n\r\n";
 
         if(write(request.c_str(), request.size()) <= 0) {
-            printf("Failed to send upgrade request\n");
+            writeError("WebSocket::connect: failed to send 'Connection-Upgrade' request");
             close();
             return false;
         }
@@ -547,7 +644,7 @@ namespace wspp {
         memset(data, 0, 1024);
 
         if(read(data, 1024) <= 0) {
-            printf("Failed to read upgrade response\n");
+            writeError("WebSocket::connect: failed to read 'Connection-Upgrade' response");
             close();
             return false;
         }
@@ -567,6 +664,7 @@ namespace wspp {
 
         if(headers.count("Sec-WebSocket-Accept") == 0) {
             printf("Missing Sec-WebSocket-Accept\n");
+            writeError("WebSocket::connect: missing 'Sec-WebSocket-Accept' in response");
             close();
             return false;
         }
@@ -574,10 +672,13 @@ namespace wspp {
         const std::string &acceptKey = headers["Sec-WebSocket-Accept"];
 
         if(!verifyKey(acceptKey, webKey)) {
-            printf("Handshake keys mismatch!\n");
+            writeError("WebSocket::connect: handshake keys mismatch");
             close();
             return false;
         }
+
+        int noDelayFlag = 1;
+        setOption(IPPROTO_TCP, TCP_NODELAY, (char *)&noDelayFlag, sizeof(int));
 
         return true;
     }
@@ -614,7 +715,7 @@ namespace wspp {
     #ifdef _WIN32
         u_long mode = isBlocking ? 0 : 1; // 1 to enable non-blocking socket
         if (ioctlsocket(s.fd, FIONBIO, &mode) != 0) {
-            printf("Failed to set blocking mode\n");
+            writeError("WebSocket::connect: failed to set blocking mode");
         }
     #else
         int flags = fcntl(s.fd, F_GETFL, 0);
@@ -628,19 +729,24 @@ namespace wspp {
     #endif
     }
 
-    Result WebSocket::send(OpCode opcode, const void *data, size_t size, bool masked) {
+    Result WebSocket::send(OpCode opcode, const void *data, uint64_t size, bool masked) {
         bool first = true;
+
+        if(data != nullptr && size == 0) {
+            return Result::InvalidArgument;
+        }
 
         Result status = Result::Ok;
 
-        if(data && size > 0) {
-            uint64_t chunkSize = 100;
+        if(data != nullptr) {
+            const uint64_t chunkSize = 1024;
+            uint64_t totalSize = size;
             const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(data);
 
-            while (size > 0) {
-                uint64_t length = std::min(size, chunkSize);
+            while (totalSize > 0) {
+                uint64_t length = std::min(totalSize, chunkSize);
                 OpCode opc = first ? opcode : OpCode::Continuation;
-                bool fin = size - length == 0;
+                bool fin = totalSize - length == 0;
                 
                 status = writeFrame(opc, fin, pPayload, length, masked);
                 
@@ -648,7 +754,7 @@ namespace wspp {
                     return status;
 
                 pPayload += length;
-                size -= length;
+                totalSize -= length;
                 first = false;
             }
         } else {
@@ -658,115 +764,132 @@ namespace wspp {
         return status;
     }
 
-    Result WebSocket::receive(Message *message) {
-        uint8_t peekData = 0;
-        ssize_t peekedBytes = 0;
+    Result WebSocket::receive() {
+        Message message;
 
-        peekedBytes = peek(&peekData, 1);
+        bool messageComplete = false;
 
-        if(peekedBytes <= 0) {
-            return (peekedBytes == 0) ? Result::NoData : Result::ConnectionError;
-        }
-
-        auto isControl = [] (uint8_t opcode) -> bool {
-            return 0x8 <= opcode && opcode <= 0xF;
+        auto isControlFrameOpcode = [] (uint8_t opcode) -> bool {
+            // Check if the opcode is one of the control frame opcodes
+            return (opcode == 0x8 || opcode == 0x9 || opcode == 0xA);
         };
 
-        MessageChunk *end = nullptr;
+        auto cleanUp = [] (Frame *f) -> void {
+            if(f->payload)
+                delete[] f->payload;
+        };
 
-        Frame frame = {0};
-        Result ret = readFrame(&frame);
+        //Loop and collect frames until we get to the 'fin' frame or run into an error
+        while(!messageComplete) {
+            uint8_t peekData = 0;
+            ssize_t peekedBytes = peek(&peekData, 1);
 
-        while (ret == Result::Ok) {
-            if (isControl(frame.opcode)) {
-                OpCode opcode = static_cast<OpCode>(frame.opcode);
-                switch (opcode) {
-                    case OpCode::Close: {
-                        message->destroy();
-                        if (frame.payload) {
-                            delete[] frame.payload;
-                            frame.payload = nullptr;
+            //If there is no data to read we can return early
+            if(peekedBytes <= 0) {
+                message.destroy();
+                return (peekedBytes == 0) ? Result::NoData : Result::ConnectionError;
+            }
+
+            Frame frame = {0};
+
+            Result result = readFrame(&frame);
+            
+            if(result != Result::Ok) {
+                message.destroy();
+                return result;
+            }
+
+            OpCode opcode = static_cast<OpCode>(frame.opcode);
+
+            switch(opcode) {
+                case OpCode::Text:
+                case OpCode::Binary: {
+                    message.opcode = opcode;
+
+                    if(message.chunks == nullptr) {
+                        message.chunks = new MessageChunk();
+
+                        if(message.chunks == nullptr) {
+                            writeError("WebSocket::receive: message.chunks = nullptr");
+                            cleanUp(&frame);
+                            return Result::AllocationError;
                         }
-                        message->chunks = nullptr;
-                        message->opcode = OpCode::Close;
-                        return Result::Ok;
-                    }
-                    case OpCode::Ping: {
-                        message->destroy();
-                        if (frame.payload) {
-                            delete[] frame.payload;
-                            frame.payload = nullptr;
-                        }
-                        message->chunks = nullptr;
-                        message->opcode = OpCode::Ping;
-                        return writeFrame(OpCode::Pong, true, nullptr, 0, true);
-                    }
-                    case OpCode::Pong: {
-                        message->destroy();
-                        if (frame.payload) {
-                            delete[] frame.payload;
-                            frame.payload = nullptr;
-                        }
-                        message->chunks = nullptr;
-                        message->opcode = OpCode::Pong;
-                        return Result::Ok;
-                    }
-                    default: {
-                        // Ignore any other control frames for now
-                        break;
-                    }
-                }
 
-                if(frame.payload) {
-                    delete[] frame.payload;
-                    frame.payload = nullptr;
-                }
-
-            } else {
-                // TODO: cws_read_message does not verify that the message starts with non CONT frame (does it have to start with non-CONT frame)?
-                // TODO: cws_read_message does not verify that any non-fin "continuation" frames have the CONT opcode
-                if (end == nullptr) {
-                    end = new MessageChunk();
-                    if (end == nullptr) {
-                        message->destroy();
-                        if (frame.payload) {
-                            delete[] frame.payload;
-                            frame.payload = nullptr;
-                        }
-                        return Result::AllocationError;
+                        message.chunks->payloadLength = frame.payloadLength;
+                        message.chunks->payload = frame.payload;
+                        message.chunks->next = nullptr;
+                    } else {
+                        //This shouldn't happen
+                        cleanUp(&frame);
                     }
-                    memset(end, 0, sizeof(*end));
-                    end->payload = frame.payload;
-                    end->payloadLength = frame.payloadLength;
-                    message->chunks = end;
-                    message->opcode = (OpCode)frame.opcode;
-                } else {
-                    end->next = new MessageChunk();
-                    if (end->next == nullptr) {
-                        message->destroy();
-                        if (frame.payload) {
-                            delete[] frame.payload;
-                            frame.payload = nullptr;
-                        }
-                        return Result::AllocationError;
-                    }
-                    memset(end->next, 0, sizeof(*end->next));
-                    end->next->payload = frame.payload;
-                    end->next->payloadLength = frame.payloadLength;
-                    end = end->next;
-                }
 
-                // The frame's payload has been moved to the message chunk (moved as in C++ moved,
-                // the ownership of the payload belongs to message now)
-                frame.payload = nullptr;
-                frame.payloadLength = 0;
-
-                if (frame.fin) {
                     break;
+                }
+                case OpCode::Continuation: {
+                    if(message.chunks != nullptr) {
+                        MessageChunk *lastChunk = message.chunks;
+                        while (lastChunk->next != nullptr) {
+                            lastChunk = lastChunk->next;
+                        }
+                        lastChunk->next = new MessageChunk();
+
+                        if(lastChunk->next == nullptr) {
+                            writeError("WebSocket::receive: lastChunk->next = nullptr");
+                            cleanUp(&frame);
+                            message.destroy();
+                            return Result::AllocationError;
+                        }
+
+                        lastChunk->next->payloadLength = frame.payloadLength;
+                        lastChunk->next->payload = nullptr;
+                        lastChunk->next->next = nullptr;
+                    } else {
+                        //This shouldn't happen
+                        cleanUp(&frame);
+                    }
+
+                    break;
+                }
+                case OpCode::Close: {
+                    break;
+                }
+                case OpCode::Ping: {
+                    writeFrame(OpCode::Pong, true, nullptr, 0, true);
+                    break;
+                }
+                case OpCode::Pong: {
+                    break;
+                }
+                default: {
+                    cleanUp(&frame);
+                    message.destroy();
+                    return Result::InvalidOpCode;
                 }
             }
 
-            ret = readFrame(&frame);
+            if(frame.fin) {
+                if(isControlFrameOpcode(frame.opcode)) {
+                    if(frame.payload)
+                        delete[] frame.payload;
+
+                    Message m;
+                    m.opcode = static_cast<OpCode>(frame.opcode);
+                    if(onReceived)
+                        onReceived(this, m);
+
+                    if(message.chunks == nullptr) {
+                        messageComplete = true;
+                        break;
+                    }
+                } else {
+                    if(onReceived)
+                        onReceived(this, message);
+                    else
+                        message.destroy();
+                    messageComplete = true;
+                    break;
+                }
+            }
         }
 
         return Result::Ok;
@@ -781,6 +904,8 @@ namespace wspp {
         return ::recv(s.fd, buffer, size, 0);
     #endif
     }
+
+
 
     ssize_t WebSocket::write(const void *buffer, size_t size) {
         if(ssl)
@@ -802,40 +927,110 @@ namespace wspp {
     #endif
     }
 
+    bool WebSocket::readAllBytes(void *buffer, size_t size) {
+        uint8_t *ptr = static_cast<uint8_t*>(buffer);
+        size_t totalRead = 0;
+
+        while (totalRead < size) {
+            ssize_t bytesRead = read(ptr + totalRead, size - totalRead);
+            
+            if (bytesRead < 0) {
+                // An error occurred
+                return false;
+            } else if (bytesRead == 0) {
+                // Connection closed
+                return false;
+            }
+
+            totalRead += bytesRead;
+        }
+
+        return true; // All bytes read successfully
+    }
+
+    bool WebSocket::writeAllBytes(const void *buffer, size_t size) {
+        const uint8_t *ptr = static_cast<const uint8_t*>(buffer);
+        size_t totalSent = 0;
+
+        while (totalSent < size) {
+            ssize_t bytesSent = write(ptr + totalSent, size - totalSent);
+            
+            if (bytesSent < 0) {
+                // An error occurred
+                return false;
+            } else if (bytesSent == 0) {
+                // Connection closed
+                return false;
+            }
+
+            totalSent += bytesSent;
+        }
+
+        return true; // All bytes sent successfully
+    }
+
+    bool WebSocket::drain(size_t size) {
+        size_t totalRead = 0;
+        ssize_t bytesRead;
+        const size_t bufferSize = 1024;
+        uint8_t buffer[bufferSize];
+
+        while (totalRead < size) {
+            size_t bytesToRead = std::min(size - totalRead, bufferSize);
+
+            bytesRead = read(buffer, bytesToRead);
+
+            if (bytesRead < 0) {
+                return false;
+            } else if (bytesRead == 0) {
+                if(totalRead == size)
+                    return true;
+                return false;
+            }
+
+            totalRead += bytesRead;
+        }
+
+        return true;
+    }
+
     Result WebSocket::writeFrame(OpCode opcode, bool fin, const void *payload, uint64_t payloadSize, bool applyMask) {
-        size_t body_offset = 0;
         uint8_t frame[32] = {0};
 
-        if(fin) {
-            frame[0] = static_cast<uint8_t>(1 << 7);
-        }
+        size_t offset = 0;
 
-        frame[0] |= static_cast<uint8_t>(opcode);
-        
-        if(applyMask) {
-            frame[1] = static_cast<uint8_t>(1 << 7);
-        }
-        if(payloadSize < 126) {
-            frame[1] |= static_cast<uint8_t>(payloadSize);
-            body_offset = 2;
-        } else if(payloadSize <= 0xFFFF) {
-            frame[1] |= 126;
-            frame[2] = static_cast<uint8_t>(payloadSize >> 8);
-            frame[3] = static_cast<uint8_t>(payloadSize & 0xFF);
-            body_offset = 4;
+        // 1st byte: FIN, RSV1, RSV2, RSV3, Opcode
+        uint8_t firstByte = 0;
+        if (fin) 
+            firstByte |= 0x80;  // FIN = 1 if true
+            
+        firstByte |= (static_cast<uint8_t>(opcode) & 0x0F);  // Opcode (lower 4 bits)
+        frame[offset++] = firstByte;
+
+        // 2nd byte: Mask bit and Payload Length (7 bits)
+        uint8_t secondByte = 0;
+        if (applyMask) 
+            secondByte |= 0x80;  // Mask bit set if true
+            
+        if (payloadSize <= 125) {
+            secondByte |= static_cast<uint8_t>(payloadSize);  // Payload length (7 bits)
+            frame[offset++] = secondByte;
+        } else if (payloadSize > 125 && payloadSize <= 65535) {
+            secondByte |= 126;  // Special case for lengths > 125 but <= 65535
+            frame[offset++] = secondByte;
+
+            uint16_t sizeNetworkOrder = static_cast<uint16_t>(payloadSize);
+            hostToNetworkOrder(&sizeNetworkOrder, &frame[offset], sizeof(uint16_t));
+            offset += sizeof(uint16_t);
         } else {
-            frame[1] |= 127;
-            frame[2] = static_cast<uint8_t>((payloadSize >> 56) & 0xFF);
-            frame[3] = static_cast<uint8_t>((payloadSize >> 48) & 0xFF);
-            frame[4] = static_cast<uint8_t>((payloadSize >> 40) & 0xFF);
-            frame[5] = static_cast<uint8_t>((payloadSize >> 32) & 0xFF);
-            frame[6] = static_cast<uint8_t>((payloadSize >> 24) & 0xFF);
-            frame[7] = static_cast<uint8_t>((payloadSize >> 16) & 0xFF);
-            frame[8] = static_cast<uint8_t>((payloadSize >>  8) & 0xFF);
-            frame[9] = static_cast<uint8_t>((payloadSize)       & 0xFF);
-            body_offset = 10;
+            secondByte |= 127;  // Special case for lengths > 65535
+            frame[offset++] = secondByte;
+
+            hostToNetworkOrder(&payloadSize, &frame[offset], sizeof(uint64_t));
+            offset += sizeof(uint64_t);
         }
 
+        // Masking Key (if applyMask is true)
         uint8_t mask[4] = {0};
 
         if(applyMask) {
@@ -845,164 +1040,106 @@ namespace wspp {
 
             for (size_t i = 0; i < 4; ++i) {
                 mask[i] = static_cast<unsigned char>(distribution(generator));
+                frame[offset++] = mask[i];
             }
 
-            memcpy(&frame[body_offset], mask, 4);
-
-            body_offset += 4;
-        }
-
-        //send header
-        ssize_t bytesWritten = 0;
-        bytesWritten = write(frame, body_offset);
-
-        if(bytesWritten <= 0) {
-            printf("Error %s\n", strerror(errno));
-
-            if(bytesWritten == 0)
-                return Result::NoData;
-            else
-                return Result::ConnectionError;
-        }
-
-        //send payload
-        uint64_t i = 0;
-        const uint8_t *pPayload = reinterpret_cast<const uint8_t*>(payload);
-
-        while (i < payloadSize) {
-            uint8_t chunk[1024];
-            uint64_t chunk_size = 0;
-
-            if(applyMask) {
-                while (i < payloadSize && chunk_size < sizeof(chunk)) {
-                    chunk[chunk_size] = pPayload[i] ^ mask[i % 4];
-                    chunk_size += 1;
-                    i += 1;
-                }
-            } else {
-                while (i < payloadSize && chunk_size < sizeof(chunk)) {
-                    chunk[chunk_size] = pPayload[i];
-                    chunk_size += 1;
-                    i += 1;
-                }
-            }
-
-            bytesWritten = write(chunk, chunk_size);
-
-            if(bytesWritten <= 0) {                
-                return Result::ConnectionError;
+            // Now, handle the payload (applying the mask if necessary).
+            uint8_t* payloadBytes = (uint8_t*)payload;
+            for (uint64_t i = 0; i < payloadSize; ++i) {
+                payloadBytes[i] = payloadBytes[i] ^ mask[i % 4];
             }
         }
+
+        // std::cout << "\n### WriteFrame data begin ###\n";
+        // dumpFrame(opcode, frame, offset);
+        // std::cout << "### WriteFrame data end ###\n\n";
+
+        if(!writeAllBytes(frame, offset))
+            return Result::ConnectionError;
         
+        if(payloadSize == 0)
+            return Result::Ok;
+
+        if(!writeAllBytes(payload, payloadSize))
+            return Result::ConnectionError;
+
         return Result::Ok;
     }
 
     Result WebSocket::readFrame(Frame *frame) {
-        #define FIN(header)         ((header)[0] >> 7)
-        #define OPCODE(header)      ((header)[0] & 0xF)
-        #define MASK(header)        ((header)[1] >> 7)
-        #define PAYLOAD_LEN(header) ((header)[1] & 0x7F)
+        uint8_t header[32] = {0};
+        uint8_t frameData[32] = {0};
+        size_t offset = 0;
 
-        uint8_t header[2] = {0};
+        if(!readAllBytes(header, 2)) {
+            return Result::ConnectionError;
+        }
 
-        // Read the header
-        ssize_t bytesRead = read(header, sizeof(header));
+        memcpy(frameData, header, 2);
+        offset += 2;
 
-        if (bytesRead <= 0) {
-            if(bytesRead == 0)
-                return Result::NoData;
-            else
+        frame->fin = (header[0] & 0x80) != 0;
+        frame->opcode = header[0] & 0x0F;      // Extract Opcode (4 bits)
+        bool masked = (header[1] & 0x80) != 0;
+        uint8_t payloadLength = header[1] & 0x7F;
+        frame->payloadLength = static_cast<uint64_t>(payloadLength);
+
+        if (payloadLength == 126) {
+            uint8_t extendedLength[2] = {0};
+            
+            if(!readAllBytes(extendedLength, 2)) {
                 return Result::ConnectionError;
+            }
+
+            memcpy(&frameData[offset], extendedLength, 2);
+            offset += 2;
+
+            uint16_t sizeHostOrder = 0;
+            networkToHostOrder(extendedLength, &sizeHostOrder, sizeof(uint16_t));
+            frame->payloadLength = static_cast<uint64_t>(sizeHostOrder);
+        } else if (payloadLength == 127) {
+            uint8_t extendedLength[8] = {0};
+            
+            if(!readAllBytes(extendedLength, 8)) {
+                return Result::ConnectionError;
+            }
+
+            memcpy(&frameData[offset], extendedLength, 8);
+            offset += 8;
+
+            networkToHostOrder(extendedLength, &frame->payloadLength, sizeof(uint64_t));
         }
 
-        frame->fin = FIN(header);
-        frame->opcode = OPCODE(header);
-
-        uint64_t payloadLength = 0;
-
-        // Parse the payload length
-        // TODO: do we need to reverse the bytes on a machine with a different endianess than x86?
-        uint8_t len = PAYLOAD_LEN(header);
-        
-        switch (len) {
-            case 126: {
-                uint8_t ext_len[2] = {0};
-
-                bytesRead = read(&ext_len, sizeof(ext_len));
-
-                if (bytesRead <= 0) {
-                    if(bytesRead == 0)
-                        return Result::NoData;
-                    else
-                        return Result::ConnectionError;
-                }
-
-                for (size_t i = 0; i < sizeof(ext_len); ++i) {
-                    payloadLength = (payloadLength << 8) | ext_len[i];
-                }
-
-                break;
-            }
-            case 127: {
-                uint8_t ext_len[8] = {0};
-
-                bytesRead = read(&ext_len, sizeof(ext_len));
-
-                if (bytesRead <= 0) {
-                    if(bytesRead == 0)
-                        return Result::NoData;
-                    else
-                        return Result::ConnectionError;
-                }
-
-                for (size_t i = 0; i < sizeof(ext_len); ++i) {
-                    payloadLength = (payloadLength << 8) | ext_len[i];
-                }
-
-                break;
-            }
-            default:
-                payloadLength = len;
-        }
-
-        frame->payloadLength = payloadLength;
-
-        // Read the mask
         uint8_t mask[4] = {0};
-        bool masked = MASK(header);
 
-        if (masked) {
-            bytesRead = read(mask, 4);
-
-            if (bytesRead <= 0) {
-                if(bytesRead == 0)
-                    return Result::NoData;
-                else
-                    return Result::ConnectionError;
+        if(masked) {
+            if(!readAllBytes(mask, 4)) {
+                return Result::ConnectionError;
             }
+
+            memcpy(&frameData[offset], mask, 8);
+            offset += 4;
         }
 
-        // Read the payload
-        if (frame->payloadLength > 0) {
-            frame->payload = new uint8_t[payloadLength];
+        if(frame->payloadLength > 0) {
+            //printf("Allocating memory: %zu\n", frame->payloadLength);
 
-            if (frame->payload == nullptr) {
+            frame->payload = new uint8_t[frame->payloadLength];
+            
+            if(frame->payload == nullptr) {
+                writeError("WebSocket::readFrame: frame->payload = nullptr");
+                //If we make it here, make sure to 'consume' remaining data
+                drain(frame->payloadLength);
                 return Result::AllocationError;
             }
-
-            memset(frame->payload, 0, payloadLength);
-
-            // TODO: cws_read_frame does not handle when cws->read didn't read the whole payload
-            bytesRead = read(frame->payload, frame->payloadLength);
-
-            if (bytesRead <= 0) {
+            
+            memset(frame->payload, 0, frame->payloadLength);
+            
+            if(!readAllBytes(frame->payload, frame->payloadLength)) {
                 delete[] frame->payload;
                 frame->payload = nullptr;
-
-                if(bytesRead == 0)
-                    return Result::NoData;
-                else
-                    return Result::ConnectionError;
+                frame->payloadLength = 0;
+                return Result::ConnectionError;
             }
 
             if(masked) {
@@ -1014,10 +1151,15 @@ namespace wspp {
                 if(!isValidUTF8(frame->payload, frame->payloadLength)) {
                     delete[] frame->payload;
                     frame->payload = nullptr;
+                    frame->payloadLength = 0;
                     return Result::UTF8Error;
                 }
             }
         }
+
+        // std::cout << "\n### ReadFrame data begin ###\n";
+        // dumpFrame(static_cast<OpCode>(frame->opcode), frameData, offset);
+        // std::cout << "### ReadFrame data end ###\n\n";
 
         return Result::Ok;
     }
@@ -1342,6 +1484,11 @@ namespace wspp {
         }
 
         return numBytes == 0; // Ensure all characters were complete
+    }
+
+    void WebSocket::writeError(const std::string &message) {
+        if(onError)
+            onError(message);
     }
 
     ///////////////
