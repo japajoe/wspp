@@ -21,13 +21,13 @@ void onTick(WebClient *client, double deltaTime);
 void onError(WebClient *client, const std::string &message);
 
 int main(int argc, char **argv) {
-    WebClient client("wss://pumpportal.fun/api/data");
+    WebClient client;
     client.onConnected = &onConnected;
     client.onDisconnected = &onDisconnected;
     client.onReceived = &onReceived;
     client.onTick = &onTick;
     client.onError = &onError;
-    client.run();
+    client.run("wss://pumpportal.fun/api/data");
     
     return 0;
 }
@@ -79,13 +79,13 @@ int main(int argc, char **argv) {
     configuration.maxClients = 32;
     configuration.port = 8080;
 
-    WebServer server(configuration);
+    WebServer server;
     server.onConnected = &onConnected;
     server.onDisconnected = &onDisconnected;
     server.onReceived = &onReceived;
     server.onTick = &onTick;
     server.onError = &onError;
-    server.run();
+    server.run(configuration);
     
     return 0;
 }

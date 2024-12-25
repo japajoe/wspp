@@ -64,9 +64,8 @@ namespace wspp {
         ServerTickCallback onTick;
         ServerErrorCallback onError;
         WebServer();
-        WebServer(const Configuration &configuration);
         ~WebServer();
-        bool run();
+        bool run(const Configuration &configuration);
         void stop();
         void send(uint32_t clientId, OpCode opcode, const void *data, size_t size);
         void broadcast(OpCode opcode, const void *data, size_t size);
@@ -75,7 +74,6 @@ namespace wspp {
         WebSocket listener;
         std::vector<Client> clients;
         uint32_t pingTimer;
-        Configuration configuration;
         Timer timer;
         bool isRunning;
         void acceptConnections();

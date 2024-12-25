@@ -66,7 +66,7 @@ namespace wspp {
         if(payload.size() == 0)
             return false;
 
-        char *ptr = (char*)payload.data();
+        char *ptr = reinterpret_cast<char*>(payload.data());
 
         s = std::string(ptr, payload.size());
 

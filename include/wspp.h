@@ -129,12 +129,6 @@ namespace wspp {
         InvalidArgument = 6
     };
 
-    struct MessageChunk {
-        MessageChunk *next;
-        uint64_t payloadLength;
-        uint8_t *payload;
-    };
-
     class Message {
     public:
         OpCode opcode;

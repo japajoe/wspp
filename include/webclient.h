@@ -44,14 +44,12 @@ namespace wspp {
         ClientTickCallback onTick;
         ClientErrorCallback onError;
         WebClient();
-        WebClient(const std::string &uri);
         ~WebClient();
-        bool run();
+        bool run(const std::string &uri);
         void stop();
         void send(OpCode opcode, const void *data, size_t size);
     private:
         WebSocket connection;
-        std::string uri;
         Timer timer;
         bool isRunning;
         void getMessages();

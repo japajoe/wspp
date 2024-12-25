@@ -62,22 +62,6 @@ namespace wspp {
         };
     }
 
-    WebClient::WebClient(const std::string &uri) {
-        wspp::initialize();
-        this->uri = uri;
-        isRunning = false;
-        webClients.push_back(this);
-        registerSignals();
-        
-        connection.onError = [this] (const std::string &message) {
-            onHandleError(message);
-        };
-        
-        connection.onReceived = [this] (const WebSocket *socket, Message &message) {
-            onMessageReceived(socket, message);
-        };
-    }
-
     WebClient::~WebClient() {
         connection.close();
         
@@ -99,7 +83,7 @@ namespace wspp {
         wspp::deinitialize();
     }
 
-    bool WebClient::run() {
+    bool WebClient::run(const std::string &uri) {
         if(isRunning)
             return false;
 
@@ -114,7 +98,6 @@ namespace wspp {
         isRunning = true;
         
         connection.setBlocking(false);
-
         
         if(onConnected)
             onConnected(this);

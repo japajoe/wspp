@@ -49,26 +49,8 @@ namespace wspp {
 
     WebServer::WebServer() {
         wspp::initialize();
-        configuration.bindAddress = "127.0.0.1";
-        configuration.port = 8080;
-        configuration.maxClients = 32;
-        configuration.backlog = 10;
         pingTimer = 0;
         isRunning = false;
-        clients.resize(configuration.maxClients);
-        webServers.push_back(this);
-        registerSignals();
-        listener.onError = [this] (const std::string &message) {
-            onHandleError(message);
-        };
-    }
-
-    WebServer::WebServer(const Configuration &configuration) {
-        wspp::initialize();
-        this->configuration = configuration;
-        pingTimer = 0;
-        isRunning = false;
-        clients.resize(configuration.maxClients);
         webServers.push_back(this);
         registerSignals();
         listener.onError = [this] (const std::string &message) {
@@ -97,24 +79,41 @@ namespace wspp {
         wspp::deinitialize();
     }
 
-    bool WebServer::run() {
+    bool WebServer::run(const Configuration &configuration) {
         if(isRunning)
             return false;
 
-        if(configuration.certificatePath.size() > 0 && configuration.privateKeyPath.size() > 0)
-            listener = WebSocket(AddressFamily::AFInet, configuration.certificatePath, configuration.privateKeyPath);
+        Configuration config = configuration;
+      
+        if(config.backlog == 0)
+            config.backlog = 2147483647;
+        
+        if(config.maxClients == 0)
+            config.maxClients = 1;
 
-        if(!listener.bind(configuration.bindAddress, configuration.port))
+        if(clients.size() > 0) {
+            //Make sure all clients are properly cleared
+            for(size_t i = 0; i < clients.size(); i++) {
+                clients[i].connection.close();
+            }
+        }
+        
+        clients.resize(config.maxClients);
+
+        if(config.certificatePath.size() > 0 && config.privateKeyPath.size() > 0)
+            listener = WebSocket(AddressFamily::AFInet, config.certificatePath, config.privateKeyPath);
+
+        if(!listener.bind(config.bindAddress, config.port))
             return false;
 
         listener.setBlocking(false);
         
-        if(!listener.listen(configuration.backlog))
+        if(!listener.listen(config.backlog))
             return false;
 
         isRunning = true;
 
-        printf("Server is listening on %s:%zu\n", configuration.bindAddress.c_str(), configuration.port);
+        printf("Server is listening on %s:%zu\n", config.bindAddress.c_str(), config.port);
         
         while(isRunning) {
             acceptConnections();
