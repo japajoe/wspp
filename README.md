@@ -49,7 +49,7 @@ void onReceived(WebClient *client, Message &message) {
 using namespace wspp;
 
 void onConnected(WebServer *server, uint32_t clientId);
-void onDisconnected(WebServer *server, uint32_t clientId);
+void onDisconnected(WebServer *server, uint32_t clientId, DisconnectReason reason);
 void onReceived(WebServer *server, uint32_t clientId, Message &message);
 
 int main(int argc, char **argv) {
@@ -72,7 +72,7 @@ void onConnected(WebServer *server, uint32_t clientId) {
     printf("A client has connected with ID: %zu\n", clientId);
 }
 
-void onDisconnected(WebServer *server, uint32_t clientId) {
+void onDisconnected(WebServer *server, uint32_t clientId, DisconnectReason reason) {
     printf("A client has disconnected with ID: %zu\n", clientId);
 }
 
