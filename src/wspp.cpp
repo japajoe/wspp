@@ -1027,14 +1027,6 @@ namespace wspp {
                 for(size_t i = 0; i < frame->payloadLength; i++)
                     frame->payload[i] = frame->payload[i] ^ mask[i % 4];
             }
-
-            //This could still cause false positives for fragmented messages
-            // if(frame->opcode == 0x1) {
-            //     if(!isValidUTF8(&frame->payload[0], frame->payloadLength)) {
-            //         frame->payloadLength = 0;
-            //         return Result::UTF8Error;
-            //     }
-            // }
         }
 
         return Result::Ok;
