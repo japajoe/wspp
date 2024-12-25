@@ -25,6 +25,7 @@ int main(int argc, char **argv) {
     client.onTick = &onTick;
     client.onError = &onError;
     client.run();
+    
     return 0;
 }
 
