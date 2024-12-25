@@ -268,6 +268,12 @@ namespace wspp {
             int reuseFlag = 1;
             setOption(SOL_SOCKET, SO_REUSEADDR, &reuseFlag, sizeof(int));
 
+            //This option is used to prevent data being buffered before being sent over the network
+            //With TCP_NODELAY enabled, socket write calls are sent immediately
+            //With the option disabled (which is default), the receiver might not receive the expected number of bytes at once
+            //The reason I turn it on is because I have observed receiving 'corrupt' packets, and this seems to help
+            //After some research I've found that browsers use this option as well, see https://github.com/websockets/ws/issues/791
+            //For more information look up `Nagle's algorithm`
             int noDelayFlag = 1;
             setOption(IPPROTO_TCP, TCP_NODELAY, (char *)&noDelayFlag, sizeof(int));
 
@@ -606,6 +612,12 @@ namespace wspp {
             return false;
         }
 
+        //This option is used to prevent data being buffered before being sent over the network
+        //With TCP_NODELAY enabled, socket write calls are sent immediately
+        //With the option disabled (which is default), the receiver might not receive the expected number of bytes at once
+        //The reason I turn it on is because I have observed receiving 'corrupt' packets, and this seems to help
+        //After some research I've found that browsers use this option as well, see https://github.com/websockets/ws/issues/791
+        //For more information look up `Nagle's algorithm`
         int noDelayFlag = 1;
         setOption(IPPROTO_TCP, TCP_NODELAY, (char *)&noDelayFlag, sizeof(int));
 
@@ -780,6 +792,13 @@ namespace wspp {
                         break;
                     }
                 } else {
+                    //According to RFC 6455 we need to verify if text opcodes contain valid UTF-8
+                    if(message.opcode == OpCode::Text) {
+                        if(!isValidUTF8(&message.payload[0], message.payload.size())) {
+                            return Result::UTF8Error;
+                        }
+                    }
+
                     if(onReceived)
                         onReceived(this, message);
                     messageComplete = true;
@@ -1009,12 +1028,13 @@ namespace wspp {
                     frame->payload[i] = frame->payload[i] ^ mask[i % 4];
             }
 
-            if(frame->opcode == 0x1) {
-                if(!isValidUTF8(&frame->payload[0], frame->payloadLength)) {
-                    frame->payloadLength = 0;
-                    return Result::UTF8Error;
-                }
-            }
+            //This could still cause false positives for fragmented messages
+            // if(frame->opcode == 0x1) {
+            //     if(!isValidUTF8(&frame->payload[0], frame->payloadLength)) {
+            //         frame->payloadLength = 0;
+            //         return Result::UTF8Error;
+            //     }
+            // }
         }
 
         return Result::Ok;

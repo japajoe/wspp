@@ -72,6 +72,7 @@ namespace wspp {
         void stop();
         void send(uint32_t clientId, OpCode opcode, const void *data, size_t size);
         void broadcast(OpCode opcode, const void *data, size_t size);
+        bool getIP(uint32_t clientId, std::string &ip);
     private:
         WebSocket listener;
         std::vector<Client> clients;

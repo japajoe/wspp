@@ -213,6 +213,34 @@ namespace wspp {
         sendAll(opcode, data, size);
     }
 
+    bool WebServer::getIP(uint32_t clientId, std::string &ip) {
+        if(clientId >= clients.size())
+            return false;
+        
+        Client &client = clients[clientId];
+        
+        if(!client.connection.isSet())
+            return false;
+
+        struct sockaddr_in client_addr;
+        socklen_t client_addr_len = sizeof(client_addr);
+
+        // Get the client's address
+        if (getpeername(client.connection.getFileDescriptor(), (struct sockaddr*)&client_addr, &client_addr_len) == -1) {
+            return false;
+        }
+
+        // Convert the IP address to a string
+        char ip_str[INET_ADDRSTRLEN];
+        if (inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, sizeof(ip_str)) == nullptr) {
+            return false;
+        }
+
+        ip = std::string(ip_str);
+
+        return true;
+    }
+
     void WebServer::sendTo(Client &client, OpCode opcode, const void *data, size_t size) {
         if(!client.connection.isSet())
             return;
