@@ -26,8 +26,6 @@
 #define WSPP_WEBCLIENT_HPP
 
 #include "wspp.h"
-#include <vector>
-#include <functional>
 
 namespace wspp {
     class WebClient;
