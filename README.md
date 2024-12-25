@@ -2,7 +2,7 @@
 A websocket implementation in C++. 
 
 # Note
-In general I'm following the `It works for me™` guidelines and I am not following the websocket specification (RFC 6455) to the letter, although feel free to let me know when you run into any issues.
+In general I'm following the `it works for me™` guidelines and I am not following the websocket specification (RFC 6455) to the letter, although feel free to let me know when you run into any issues.
 
 # Client Example
 ```cpp
