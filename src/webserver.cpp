@@ -66,7 +66,7 @@ namespace wspp {
     WebServer::WebServer(const Configuration &configuration) {
         wspp::initialize();
         this->configuration = configuration;
-        this->pingTimer = 0;
+        pingTimer = 0;
         isRunning = false;
         clients.resize(configuration.maxClients);
         webServers.push_back(this);
@@ -95,8 +95,6 @@ namespace wspp {
         }
 
         wspp::deinitialize();
-
-        listener.onError = nullptr;
     }
 
     bool WebServer::run() {
@@ -122,6 +120,12 @@ namespace wspp {
             acceptConnections();
             getMessages();
             sendPings();
+
+            timer.update();
+
+            if(onTick)
+                onTick(this, timer.getDeltaTime());
+
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
@@ -225,7 +229,7 @@ namespace wspp {
 
     void WebServer::onHandleError(const std::string &message) {
         if(onError)
-            onError(message);
+            onError(this, message);
     }
 
     void WebServer::onMessageReceived(const WebSocket *socket, Message &message) {

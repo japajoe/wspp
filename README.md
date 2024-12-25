@@ -7,50 +7,66 @@ I am not following the websocket specification (RFC 6455) to the letter but feel
 # Client Example
 ```cpp
 #include <wspp/webclient.h>
+#include <iostream>
 
 using namespace wspp;
 
 void onConnected(WebClient *client);
 void onDisconnected(WebClient *client);
 void onReceived(WebClient *client, Message &message);
+void onTick(WebClient *client, double deltaTime);
+void onError(WebClient *client, const std::string &message);
 
 int main(int argc, char **argv) {
     WebClient client("wss://pumpportal.fun/api/data");
     client.onConnected = &onConnected;
     client.onDisconnected = &onDisconnected;
     client.onReceived = &onReceived;
+    client.onTick = &onTick;
+    client.onError = &onError;
     client.run();
     return 0;
 }
 
 void onConnected(WebClient *client) {
-    printf("Connected to server\n");
+    std::cout << "Connected to server\n";
     std::string request = R"({ "method": "subscribeNewToken" })";
-    client->send(OpCode::Text, request.data(), request.size());
+    client->send(OpCode::Text, request.c_str(), request.size());
 }
 
 void onDisconnected(WebClient *client) {
-    printf("Disconnected from server\n");
+    std::cout << "Disconnected from server\n";
 }
 
 void onReceived(WebClient *client, Message &message) {
     if(message.opcode == OpCode::Text) {
         std::string msg;
         if(message.getText(msg)) {
-            printf("%s\n\n", msg.c_str());
+            std::cout << msg << "\n\n";
         }
     }
+}
+
+void onTick(WebClient *client, double deltaTime) {
+
+}
+
+void onError(WebClient *client, const std::string &message) {
+    std::cout << message << '\n';
 }
 ```
 # Server Example
 ```cpp
 #include <wspp/webserver.h>
+#include <iostream>
 
 using namespace wspp;
 
 void onConnected(WebServer *server, uint32_t clientId);
 void onDisconnected(WebServer *server, uint32_t clientId, DisconnectReason reason);
 void onReceived(WebServer *server, uint32_t clientId, Message &message);
+void onTick(WebServer *server, double deltaTime);
+void onError(WebServer *server, const std::string &message);
 
 int main(int argc, char **argv) {
     Configuration configuration;
@@ -63,17 +79,22 @@ int main(int argc, char **argv) {
     server.onConnected = &onConnected;
     server.onDisconnected = &onDisconnected;
     server.onReceived = &onReceived;
+    server.onTick = &onTick;
+    server.onError = &onError;
     server.run();
     
     return 0;
 }
 
 void onConnected(WebServer *server, uint32_t clientId) {
-    printf("A client has connected with ID: %zu\n", clientId);
+    std::cout << "A client has connected with ID: " << clientId << '\n';
 }
 
 void onDisconnected(WebServer *server, uint32_t clientId, DisconnectReason reason) {
-    printf("A client has disconnected with ID: %zu\n", clientId);
+    if(reason == DisconnectReason::TimeOut)
+        std::cout << "A client has disconnected (timeout) with ID: " << clientId << '\n';
+    else
+        std::cout << "A client has disconnected (closed) with ID: " << clientId << '\n';
 }
 
 void onReceived(WebServer *server, uint32_t clientId, Message &message) {
@@ -81,9 +102,17 @@ void onReceived(WebServer *server, uint32_t clientId, Message &message) {
         std::string msg;
 
         if(message.getText(msg)) {
-            printf("%s\n", msg.c_str());
+            std::cout << msg << '\n';
             server->broadcast(OpCode::Text, msg.data(), msg.size());
         }
     }
+}
+
+void onTick(WebServer *server, double deltaTime) {
+
+}
+
+void onError(WebServer *server, const std::string &message) {
+    std::cout << message << '\n';
 }
 ```

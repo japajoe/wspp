@@ -27,32 +27,7 @@
 #include <regex>
 #include <utility>
 
-#include <iostream>
-#include <iomanip>
-
 namespace wspp {
-    void dumpFrame(OpCode opcode, const uint8_t *data, size_t size) {
-        // Check if the data pointer is null
-        if (data == nullptr) {
-            std::cout << "No data to display." << std::endl;
-            return;
-        }
-
-        std::cout << "OpCode: " << static_cast<int>(opcode) << '\n';
-
-        // Iterate through each byte in the data
-        for (size_t i = 0; i < size; ++i) {
-            // Print each byte in hexadecimal format
-            std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i]) << " ";
-            
-            // Optionally, print a newline every 16 bytes for better readability
-            if ((i + 1) % 16 == 0) {
-                std::cout << std::endl;
-            }
-        }
-        std::cout << std::dec << std::endl; // Reset to decimal format
-    }
-
     ///////////////
     ///[Message]///
     ///////////////
@@ -640,17 +615,21 @@ namespace wspp {
     void WebSocket::close() {
         if(s.fd >= 0) {
         #ifdef _WIN32
+            ::shutdown(socket_fd, SD_BOTH);
             closesocket(s.fd);
         #else
+            ::shutdown(s.fd, SHUT_RDWR);
             ::close(s.fd);
         #endif
             s.fd = -1;
         }
+
         if(ssl) {
             SSL_shutdown(ssl);
             SSL_free(ssl);
             ssl = nullptr;
         }
+
         if(sslContext) {
             SSL_CTX_free(sslContext);
             sslContext = nullptr;
@@ -794,6 +773,8 @@ namespace wspp {
                     if(onReceived)
                         onReceived(this, m);
 
+                    //Even if this is a fin frame, we must check if we expect more data
+                    //If the message payload size is greater than 0, we haven't received its fin frame yet
                     if(message.payload.size() == 0) {
                         messageComplete = true;
                         break;
@@ -896,8 +877,6 @@ namespace wspp {
             if (bytesRead < 0) {
                 return false;
             } else if (bytesRead == 0) {
-                if(totalRead == size)
-                    return true;
                 return false;
             }
 
@@ -943,29 +922,24 @@ namespace wspp {
             offset += sizeof(uint64_t);
         }
 
-        // Masking Key (if applyMask is true)
-        uint8_t mask[4] = {0};
-
         if(applyMask) {
             std::random_device rd;
             std::mt19937 generator(rd());
             std::uniform_int_distribution<int> distribution(0, 255);
+
+            uint8_t mask[4] = {0};
 
             for (size_t i = 0; i < 4; ++i) {
                 mask[i] = static_cast<unsigned char>(distribution(generator));
                 frame[offset++] = mask[i];
             }
 
-            // Now, handle the payload (applying the mask if necessary).
             uint8_t* payloadBytes = (uint8_t*)payload;
+
             for (uint64_t i = 0; i < payloadSize; ++i) {
                 payloadBytes[i] = payloadBytes[i] ^ mask[i % 4];
             }
         }
-
-        // std::cout << "\n### WriteFrame data begin ###\n";
-        // dumpFrame(opcode, frame, offset);
-        // std::cout << "### WriteFrame data end ###\n\n";
 
         if(!writeAllBytes(frame, offset))
             return Result::ConnectionError;
@@ -981,18 +955,13 @@ namespace wspp {
 
     Result WebSocket::readFrame(Frame *frame) {
         uint8_t header[32] = {0};
-        uint8_t frameData[32] = {0};
-        size_t offset = 0;
 
         if(!readAllBytes(header, 2)) {
             return Result::ConnectionError;
         }
 
-        memcpy(frameData, header, 2);
-        offset += 2;
-
         frame->fin = (header[0] & 0x80) != 0;
-        frame->opcode = header[0] & 0x0F;      // Extract Opcode (4 bits)
+        frame->opcode = header[0] & 0x0F;
         bool masked = (header[1] & 0x80) != 0;
         uint8_t payloadLength = header[1] & 0x7F;
         frame->payloadLength = static_cast<uint64_t>(payloadLength);
@@ -1004,9 +973,6 @@ namespace wspp {
                 return Result::ConnectionError;
             }
 
-            memcpy(&frameData[offset], extendedLength, 2);
-            offset += 2;
-
             uint16_t sizeHostOrder = 0;
             networkToHostOrder(extendedLength, &sizeHostOrder, sizeof(uint16_t));
             frame->payloadLength = static_cast<uint64_t>(sizeHostOrder);
@@ -1017,9 +983,6 @@ namespace wspp {
                 return Result::ConnectionError;
             }
 
-            memcpy(&frameData[offset], extendedLength, 8);
-            offset += 8;
-
             networkToHostOrder(extendedLength, &frame->payloadLength, sizeof(uint64_t));
         }
 
@@ -1029,9 +992,6 @@ namespace wspp {
             if(!readAllBytes(mask, 4)) {
                 return Result::ConnectionError;
             }
-
-            memcpy(&frameData[offset], mask, 8);
-            offset += 4;
         }
 
         if(frame->payloadLength > 0) {
@@ -1056,10 +1016,6 @@ namespace wspp {
                 }
             }
         }
-
-        // std::cout << "\n### ReadFrame data begin ###\n";
-        // dumpFrame(static_cast<OpCode>(frame->opcode), frameData, offset);
-        // std::cout << "### ReadFrame data end ###\n\n";
 
         return Result::Ok;
     }
@@ -1389,6 +1345,59 @@ namespace wspp {
     void WebSocket::writeError(const std::string &message) {
         if(onError)
             onError(message);
+    }
+
+    ///////////////
+    ////[Timer]////
+    ///////////////
+
+    Timer::Timer() {
+        tp1 = std::chrono::system_clock::now();
+        tp1 = std::chrono::system_clock::now();
+        deltaTime = 0.0;
+        elapsedTime = 0.0;
+    }
+
+    Timer::Timer(const Timer &other) {
+        tp1 = other.tp1;
+        tp2 = other.tp2;
+        deltaTime = other.deltaTime;
+        elapsedTime = other.elapsedTime;
+    }
+
+    Timer::Timer(Timer &&other) noexcept {
+        tp1 = other.tp1;
+        tp2 = other.tp2;
+        deltaTime = other.deltaTime;
+        elapsedTime = other.elapsedTime;
+    }
+
+    Timer &Timer::operator=(const Timer &other) {
+        if(this != &other) {
+            tp1 = other.tp1;
+            tp2 = other.tp2;
+            deltaTime = other.deltaTime;
+            elapsedTime = other.elapsedTime;
+        }
+        return *this;
+    }
+
+    Timer &Timer::operator=(Timer &&other) noexcept {
+        if(this != &other) {
+            tp1 = other.tp1;
+            tp2 = other.tp2;
+            deltaTime = other.deltaTime;
+            elapsedTime = other.elapsedTime;
+        }
+        return *this;
+    }
+
+    void Timer::update() {
+        tp2 = std::chrono::system_clock::now();
+        std::chrono::duration<double> elapsed = tp2 - tp1;
+        tp1 = tp2;
+        deltaTime = elapsed.count();
+        elapsedTime += deltaTime;
     }
 
     ///////////////

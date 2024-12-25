@@ -97,8 +97,6 @@ namespace wspp {
         }
 
         wspp::deinitialize();
-        connection.onError = nullptr;
-        connection.onReceived = nullptr;
     }
 
     bool WebClient::run() {
@@ -123,8 +121,12 @@ namespace wspp {
 
         while(isRunning) {
             getMessages();
+
+            timer.update();
+
             if(onTick)
-                onTick(this);
+                onTick(this, timer.getDeltaTime());
+
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
@@ -154,7 +156,7 @@ namespace wspp {
 
     void WebClient::onHandleError(const std::string &message) {
         if(onError)
-            onError(message);
+            onError(this, message);
     }
 
     void WebClient::onMessageReceived(const WebSocket *socket, Message &message) {
@@ -168,6 +170,10 @@ namespace wspp {
                 connection.close();
                 if(onDisconnected)
                     onDisconnected(this);
+                break;
+            case OpCode::Ping:
+                if(onReceived)
+                    onReceived(this, message);
                 break;
             default:
                 break;

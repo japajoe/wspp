@@ -35,7 +35,8 @@ namespace wspp {
     using ClientReceivedCallback = std::function<void(WebClient *client, Message &message)>;
     using ClientConnectedCallback = std::function<void(WebClient *client)>;
     using ClientDisconnectedCallback = std::function<void(WebClient *client)>;
-    using ClientTickCallback = std::function<void(WebClient *client)>;
+    using ClientTickCallback = std::function<void(WebClient *client, double deltaTime)>;
+    using ClientErrorCallback = std::function<void(WebClient *client, const std::string &message)>;
 
     class WebClient {
     public:
@@ -43,7 +44,7 @@ namespace wspp {
         ClientConnectedCallback onConnected;
         ClientDisconnectedCallback onDisconnected;
         ClientTickCallback onTick;
-        ErrorCallback onError;
+        ClientErrorCallback onError;
         WebClient();
         WebClient(const std::string &uri);
         ~WebClient();
@@ -53,6 +54,7 @@ namespace wspp {
     private:
         WebSocket connection;
         std::string uri;
+        Timer timer;
         bool isRunning;
         void getMessages();
         void onHandleError(const std::string &message);

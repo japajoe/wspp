@@ -135,20 +135,6 @@ namespace wspp {
         uint8_t *payload;
     };
 
-    // class Message {
-    // public:
-    //     OpCode opcode;
-    //     MessageChunk *chunks;
-    //     Message();
-    //     Message(const Message &other) noexcept;
-    //     Message(Message &&other);
-    //     Message& operator=(const Message &other);
-    //     Message& operator=(Message &&other) noexcept;
-    //     void destroy();
-    //     bool getText(std::string &s);
-    //     bool getRaw(std::vector<uint8_t> &data);
-    // };
-
     class Message {
     public:
         OpCode opcode;
@@ -227,6 +213,25 @@ namespace wspp {
         bool verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey);
         bool isValidUTF8(const void *payload, size_t size);
         void writeError(const std::string &message);
+    };
+
+    using TimePoint = std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds>;
+
+    class Timer {
+    public:
+        Timer();
+        Timer(const Timer &other);
+        Timer(Timer &&other) noexcept;
+        Timer& operator=(const Timer &other);
+        Timer& operator=(Timer &&other) noexcept;
+        inline double getDeltaTime() const { return deltaTime; }
+        inline double getElapsedTime() const { return elapsedTime; }
+        void update();
+    private:
+        TimePoint tp1;
+        TimePoint tp2;
+        double deltaTime;
+        double elapsedTime;        
     };
 
     namespace URI {
