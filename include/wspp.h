@@ -149,6 +149,8 @@ namespace wspp {
         uint8_t RSV2;
         uint8_t RSV3;
         uint8_t opcode;
+        bool masked;
+        uint8_t mask[4];
         uint64_t payloadLength;
         std::vector<uint8_t> payload;
     };
@@ -208,7 +210,7 @@ namespace wspp {
         bool verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey);
         bool isValidUTF8(const void *payload, size_t size);
         void writeError(const std::string &message);
-        Result closeWithResult(Result result);
+        Result dropConnection(Result result);
     };
 
     using TimePoint = std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds>;

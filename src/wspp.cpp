@@ -737,7 +737,7 @@ namespace wspp {
                 switch(result) {
                     case Result::ConnectionError:
                     case Result::ControlFrameTooBig:
-                        return closeWithResult(result);
+                        return dropConnection(result);
                     default:
                         return result;
                 }
@@ -754,7 +754,7 @@ namespace wspp {
                         message.payload.insert(message.payload.end(), frame.payload.begin(), frame.payload.end());
                     } else {
                         //This shouldn't happen
-                        return closeWithResult(Result::NoData);
+                        return dropConnection(Result::NoData);
                     }
 
                     break;
@@ -764,7 +764,7 @@ namespace wspp {
                         message.payload.insert(message.payload.end(), frame.payload.begin(), frame.payload.end());
                     } else {
                         //This shouldn't happen
-                        return closeWithResult(Result::NoData);
+                        return dropConnection(Result::NoData);
                     }
 
                     break;
@@ -806,7 +806,7 @@ namespace wspp {
                     //According to RFC 6455 we need to verify if text opcodes contain valid UTF-8
                     if(message.opcode == OpCode::Text) {
                         if(!isValidUTF8(&message.payload[0], message.payload.size())) {
-                            return closeWithResult(Result::UTF8Error);
+                            return dropConnection(Result::UTF8Error);
                         }
                     }
 
@@ -986,13 +986,12 @@ namespace wspp {
     Result WebSocket::readFrame(Frame *frame) {
         uint8_t header[32] = {0};
 
-        if(!readAllBytes(header, 2)) {
+        if(!readAllBytes(header, 2))
             return Result::ConnectionError;
-        }
 
         frame->fin = (header[0] & 0x80) != 0;
         frame->opcode = header[0] & 0x0F;
-        bool masked = (header[1] & 0x80) != 0;
+        frame->masked = (header[1] & 0x80) != 0;
         uint8_t payloadLength = header[1] & 0x7F;
         frame->payloadLength = static_cast<uint64_t>(payloadLength);
 
@@ -1004,9 +1003,8 @@ namespace wspp {
         if (payloadLength == 126) {
             uint8_t extendedLength[2] = {0};
             
-            if(!readAllBytes(extendedLength, 2)) {
+            if(!readAllBytes(extendedLength, 2))
                 return Result::ConnectionError;
-            }
 
             uint16_t sizeHostOrder = 0;
             networkToHostOrder(extendedLength, &sizeHostOrder, sizeof(uint16_t));
@@ -1014,9 +1012,8 @@ namespace wspp {
         } else if (payloadLength == 127) {
             uint8_t extendedLength[8] = {0};
             
-            if(!readAllBytes(extendedLength, 8)) {
+            if(!readAllBytes(extendedLength, 8))
                 return Result::ConnectionError;
-            }
 
             networkToHostOrder(extendedLength, &frame->payloadLength, sizeof(uint64_t));
         }
@@ -1025,27 +1022,22 @@ namespace wspp {
             return Result::ControlFrameTooBig;
         }
 
-        uint8_t mask[4] = {0};
-
-        if(masked) {
-            if(!readAllBytes(mask, 4)) {
+        if(frame->masked) {
+            if(!readAllBytes(frame->mask, 4))
                 return Result::ConnectionError;
-            }
         }
 
         if(frame->payloadLength > 0) {
             frame->payload.resize(frame->payloadLength);
-            
-            memset(&frame->payload[0], 0, frame->payloadLength);
             
             if(!readAllBytes(&frame->payload[0], frame->payloadLength)) {
                 frame->payloadLength = 0;
                 return Result::ConnectionError;
             }
 
-            if(masked) {
+            if(frame->masked) {
                 for(size_t i = 0; i < frame->payloadLength; i++)
-                    frame->payload[i] = frame->payload[i] ^ mask[i % 4];
+                    frame->payload[i] = frame->payload[i] ^ frame->mask[i % 4];
             }
         }
 
@@ -1379,7 +1371,7 @@ namespace wspp {
             onError(message);
     }
 
-    Result WebSocket::closeWithResult(Result result) {
+    Result WebSocket::dropConnection(Result result) {
         close();
         return result;
     }
