@@ -126,7 +126,8 @@ namespace wspp {
         AllocationError = 3,
         UTF8Error = 4,
         InvalidOpCode = 5,
-        InvalidArgument = 6
+        InvalidArgument = 6,
+        ControlFrameTooBig = 7
     };
 
     class Message {
@@ -207,6 +208,7 @@ namespace wspp {
         bool verifyKey(const std::string& receivedAcceptKey, const std::string& originalKey);
         bool isValidUTF8(const void *payload, size_t size);
         void writeError(const std::string &message);
+        Result closeWithResult(Result result);
     };
 
     using TimePoint = std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds>;

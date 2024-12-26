@@ -721,12 +721,12 @@ namespace wspp {
 
         //Loop and collect frames until we get to the 'fin' frame or run into an error
         while(!messageComplete) {
-            uint8_t peekData = 0;
-            ssize_t peekedBytes = peek(&peekData, 1);
+            uint16_t peekData = 0;
+            ssize_t peekedBytes = peek(&peekData, 2); //Header is at least 2 bytes
 
             //If there is no data to read we can return early
             if(peekedBytes <= 0) {
-                return (peekedBytes == 0) ? Result::NoData : Result::ConnectionError;
+                return Result::Ok;
             }
 
             Frame frame = {0};
@@ -734,7 +734,13 @@ namespace wspp {
             Result result = readFrame(&frame);
             
             if(result != Result::Ok) {
-                return result;
+                switch(result) {
+                    case Result::ConnectionError:
+                    case Result::ControlFrameTooBig:
+                        return closeWithResult(result);
+                    default:
+                        return result;
+                }
             }
 
             OpCode opcode = static_cast<OpCode>(frame.opcode);
@@ -748,7 +754,7 @@ namespace wspp {
                         message.payload.insert(message.payload.end(), frame.payload.begin(), frame.payload.end());
                     } else {
                         //This shouldn't happen
-                        return Result::NoData;
+                        return closeWithResult(Result::NoData);
                     }
 
                     break;
@@ -758,7 +764,7 @@ namespace wspp {
                         message.payload.insert(message.payload.end(), frame.payload.begin(), frame.payload.end());
                     } else {
                         //This shouldn't happen
-                        return Result::NoData;
+                        return closeWithResult(Result::NoData);
                     }
 
                     break;
@@ -800,7 +806,7 @@ namespace wspp {
                     //According to RFC 6455 we need to verify if text opcodes contain valid UTF-8
                     if(message.opcode == OpCode::Text) {
                         if(!isValidUTF8(&message.payload[0], message.payload.size())) {
-                            return Result::UTF8Error;
+                            return closeWithResult(Result::UTF8Error);
                         }
                     }
 
@@ -990,6 +996,11 @@ namespace wspp {
         uint8_t payloadLength = header[1] & 0x7F;
         frame->payloadLength = static_cast<uint64_t>(payloadLength);
 
+        auto isControlFrameOpcode = [] (uint8_t opcode) -> bool {
+            // Check if the opcode is one of the control frame opcodes
+            return (opcode == 0x8 || opcode == 0x9 || opcode == 0xA);
+        };
+
         if (payloadLength == 126) {
             uint8_t extendedLength[2] = {0};
             
@@ -1008,6 +1019,10 @@ namespace wspp {
             }
 
             networkToHostOrder(extendedLength, &frame->payloadLength, sizeof(uint64_t));
+        }
+
+        if(isControlFrameOpcode(frame->opcode) && (frame->payloadLength > 125 || !frame->fin)) {
+            return Result::ControlFrameTooBig;
         }
 
         uint8_t mask[4] = {0};
@@ -1362,6 +1377,11 @@ namespace wspp {
     void WebSocket::writeError(const std::string &message) {
         if(onError)
             onError(message);
+    }
+
+    Result WebSocket::closeWithResult(Result result) {
+        close();
+        return result;
     }
 
     ///////////////

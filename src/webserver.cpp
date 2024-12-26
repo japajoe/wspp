@@ -196,6 +196,10 @@ namespace wspp {
                 continue;
 
             Result result = client.connection.receive();
+
+            if(result != Result::Ok) {
+                std::cout << "Receive error: " << static_cast<int>(result) << '\n';
+            }
         }
     }
 
