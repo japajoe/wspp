@@ -24,6 +24,7 @@
 
 #include "webserver.h"
 #include <thread>
+#include <iostream>
 #include <signal.h>
 
 namespace wspp {
@@ -47,9 +48,17 @@ namespace wspp {
         }
     }
 
+    void Configuration::loadDefault() {
+        backlog = 10;
+        bindAddress = "127.0.0.1";
+        maxClients = 32;
+        port = 8080;
+        pingInterval = 30.0;
+        pingResponseTimeOut = 10.0;
+    }
+
     WebServer::WebServer() {
         wspp::initialize();
-        pingTimer = 0;
         isRunning = false;
         webServers.push_back(this);
         registerSignals();
@@ -83,13 +92,19 @@ namespace wspp {
         if(isRunning)
             return false;
 
-        Configuration config = configuration;
+        this->config = configuration;
       
         if(config.backlog == 0)
             config.backlog = 2147483647;
         
         if(config.maxClients == 0)
             config.maxClients = 1;
+
+        if(config.pingInterval <= 0.0)
+            config.pingInterval = 30.0;
+
+        if(config.pingResponseTimeOut <= 0.0)
+            config.pingResponseTimeOut = 10.0;
 
         if(clients.size() > 0) {
             //Make sure all clients are properly cleared
@@ -113,7 +128,7 @@ namespace wspp {
 
         isRunning = true;
 
-        printf("Server is listening on %s:%zu\n", config.bindAddress.c_str(), config.port);
+        std::cout << "Server is listening on " << config.bindAddress << ":" << config.port << '\n';
         
         while(isRunning) {
             acceptConnections();
@@ -144,6 +159,7 @@ namespace wspp {
         
         if(listener.accept(connection)) {
             bool accepted = false;
+
             for(size_t i = 0; i < clients.size(); i++) {
                 Client &client = clients[i];
                 
@@ -152,7 +168,8 @@ namespace wspp {
         
                 client.connection = std::move(connection);
                 client.connection.setBlocking(false);
-                client.lastPong = 0;
+                client.pingTimer = 0.0;
+                client.lastPong = 0.0;
                 client.id = static_cast<uint32_t>(i);
                 client.connection.onReceived = [this] (const WebSocket *socket, Message &message) {
                     onMessageReceived(socket, message);
@@ -164,8 +181,12 @@ namespace wspp {
                 accepted = true;
                 break;
             }
-            if(!accepted)
+
+            if(!accepted) {
+                connection.onReceived = nullptr;
+                connection.send(OpCode::Close, nullptr, 0, false);
                 connection.close();
+            }
         }
     }
 
@@ -179,19 +200,21 @@ namespace wspp {
     }
 
     void WebServer::sendPings() {
-        if(pingTimer >= 30000) {
-            sendAll(OpCode::Ping, nullptr, 0);
-            pingTimer = 0;
-        } else {
-            pingTimer += 10;
+        for (Client &client : clients) {
+            if(!client.connection.isSet())
+                continue;
+            
+            if(client.pingTimer >= config.pingInterval) {
+                sendTo(client, OpCode::Ping, nullptr, 0);
+                client.pingTimer = 0.0;
+            } else {
+                client.pingTimer += timer.getDeltaTime();
+                client.lastPong += timer.getDeltaTime();
 
-            for (Client &client : clients) {
-                if(!client.connection.isSet())
-                    continue;
-                
-                client.lastPong += 10;
+                double pingResponseTimeOut = config.pingInterval + config.pingResponseTimeOut;
 
-                if(client.lastPong >= 45000) {
+                if(client.lastPong >= pingResponseTimeOut) {
+                    client.connection.send(OpCode::Close, nullptr, 0, false);
                     client.connection.close();
                     client.connection.onReceived = nullptr;
                     if(onDisconnected)
@@ -269,9 +292,8 @@ namespace wspp {
             }
         }
 
-        if(client == nullptr) {
+        if(client == nullptr)
             return;
-        }
 
         switch(message.opcode) {
             case OpCode::Text:
@@ -285,11 +307,17 @@ namespace wspp {
                 if(onDisconnected)
                     onDisconnected(this, client->id, DisconnectReason::ConnectionClosed);
                 break;
+            case OpCode::Ping:
+                if(onReceived)
+                    onReceived(this, client->id, message);
+                break;
             case OpCode::Pong:
                 client->lastPong = 0;
+                if(onReceived)
+                    onReceived(this, client->id, message);
                 break;
             default:
-                printf("Received invalid opcode: %zu\n", static_cast<int>(message.opcode));
+                std::cout << "Received invalid opcode: " << static_cast<int>(message.opcode) << '\n';
                 break;
         }
     }

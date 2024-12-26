@@ -23,6 +23,7 @@
 // Special thanks to https://github.com/tsoding/cws for reference
 
 #include "webclient.h"
+#include <iostream>
 #include <thread>
 #include <signal.h>
 
@@ -88,7 +89,7 @@ namespace wspp {
             return false;
 
         if(uri.size() == 0) {
-            printf("URI is not set\n");
+            std::cout << "URI is not set\n";
             return false;
         }
 
@@ -155,6 +156,10 @@ namespace wspp {
                     onDisconnected(this);
                 break;
             case OpCode::Ping:
+                if(onReceived)
+                    onReceived(this, message);
+                break;
+            case OpCode::Pong:
                 if(onReceived)
                     onReceived(this, message);
                 break;

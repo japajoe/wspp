@@ -45,15 +45,19 @@ namespace wspp {
         uint32_t maxClients;
         uint32_t backlog;
         uint16_t port;
+        double pingInterval;        //The interval in seconds on how often to send a ping
+        double pingResponseTimeOut; //The time in seconds that the client has to respond to a ping
         std::string bindAddress;
         std::string certificatePath;
         std::string privateKeyPath;
+        void loadDefault();
     };
 
     struct Client {
         WebSocket connection;
         uint32_t id;
-        uint32_t lastPong;
+        double pingTimer;
+        double lastPong;
     };
 
     class WebServer {
@@ -73,8 +77,8 @@ namespace wspp {
     private:
         WebSocket listener;
         std::vector<Client> clients;
-        uint32_t pingTimer;
         Timer timer;
+        Configuration config;
         bool isRunning;
         void acceptConnections();
         void acceptConnection(WebSocket &connection);
