@@ -8,6 +8,7 @@ In general I'm following the `it works for me™` guidelines and I am not follow
 - [OpenSSL](https://github.com/openssl/openssl)
 
 # Client Example
+The client example connects to the server and sends a message every second, the server responds by echoing the message to every client that is connected.
 ```cpp
 #include <wspp/webclient.h>
 #include <iostream>
@@ -20,6 +21,8 @@ void onReceived(WebClient *client, Message &message);
 void onTick(WebClient *client, double deltaTime);
 void onError(WebClient *client, const std::string &message);
 
+double messageTimer = 0.0;
+
 int main(int argc, char **argv) {
     WebClient client;
     client.onConnected = &onConnected;
@@ -27,7 +30,7 @@ int main(int argc, char **argv) {
     client.onReceived = &onReceived;
     client.onTick = &onTick;
     client.onError = &onError;
-    client.run("wss://pumpportal.fun/api/data");
+    client.run("ws://localhost:8080");
     
     return 0;
 }
@@ -46,13 +49,19 @@ void onReceived(WebClient *client, Message &message) {
     if(message.opcode == OpCode::Text) {
         std::string msg;
         if(message.getText(msg)) {
-            std::cout << msg << "\n\n";
+            std::cout << msg << "\n";
         }
     }
 }
 
 void onTick(WebClient *client, double deltaTime) {
-
+    if(messageTimer >= 1.0) {
+        std::string message = "Hello server from client";
+        client->send(OpCode::Text, request.c_str(), request.size());
+        messageTimer = 0.0;
+    } else {
+        messageTimer += deltaTime;
+    }
 }
 
 void onError(WebClient *client, const std::string &message) {
@@ -60,6 +69,7 @@ void onError(WebClient *client, const std::string &message) {
 }
 ```
 # Server Example
+The server example accepts incoming connections and receives messages from clients. Upon reception, it broadcasts the message to all connected clients, including the sender.
 ```cpp
 #include <wspp/webserver.h>
 #include <iostream>
@@ -108,7 +118,7 @@ void onReceived(WebServer *server, uint32_t clientId, Message &message) {
         std::string msg;
 
         if(message.getText(msg)) {
-            std::cout << msg << '\n';
+            std::cout << "Client (" + clientId << ") " << msg << '\n';
             server->broadcast(OpCode::Text, msg.data(), msg.size());
         }
     }
