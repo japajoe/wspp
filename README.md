@@ -78,6 +78,8 @@ int main(int argc, char **argv) {
     configuration.bindAddress = "127.0.0.1";
     configuration.maxClients = 32;
     configuration.port = 8080;
+    configuration.pingInterval = 30.0;
+    configuration.pingResponseTimeOut = 10.0;
 
     WebServer server;
     server.onConnected = &onConnected;
