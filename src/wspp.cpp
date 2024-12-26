@@ -782,6 +782,11 @@ namespace wspp {
                 if(isControlFrameOpcode(frame.opcode)) {
                     Message m;
                     m.opcode = static_cast<OpCode>(frame.opcode);
+
+                    if(frame.payloadLength > 0) {
+                        m.payload.insert(m.payload.end(), frame.payload.begin(), frame.payload.end());
+                    }
+
                     if(onReceived)
                         onReceived(this, m);
 
