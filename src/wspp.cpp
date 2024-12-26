@@ -153,6 +153,7 @@ namespace wspp {
         ssl = nullptr;
         onError = nullptr;
         onReceived = nullptr;
+        memset(&stats, 0, sizeof(NetworkStats));
     }
 
     WebSocket::WebSocket(AddressFamily addressFamily) {
@@ -163,6 +164,7 @@ namespace wspp {
         ssl = nullptr;
         onError = nullptr;
         onReceived = nullptr;
+        memset(&stats, 0, sizeof(NetworkStats));
     }
 
     WebSocket::WebSocket(AddressFamily addressFamily, const std::string &certificatePath, const std::string &privateKeyPath) {
@@ -173,6 +175,7 @@ namespace wspp {
         ssl = nullptr;
         onError = nullptr;
         onReceived = nullptr;
+        memset(&stats, 0, sizeof(NetworkStats));
 
         sslContext = SSL_CTX_new(TLS_server_method());
 
@@ -203,6 +206,7 @@ namespace wspp {
         ssl = other.ssl;
         onError = other.onError;
         onReceived = other.onReceived;
+        stats = other.stats;
     }
 
     WebSocket::WebSocket(WebSocket &&other) noexcept {
@@ -212,6 +216,7 @@ namespace wspp {
         ssl = std::exchange(other.ssl, nullptr);
         onError = std::exchange(other.onError, nullptr);
         onReceived = std::exchange(other.onReceived, nullptr);
+        stats = std::move(other.stats);
     }
 
     WebSocket::~WebSocket() {
@@ -225,6 +230,7 @@ namespace wspp {
             ssl = other.ssl;
             onError = other.onError;
             onReceived = other.onReceived;
+            stats = other.stats;
         }
         return *this;
     }
@@ -237,6 +243,7 @@ namespace wspp {
             ssl = std::exchange(other.ssl, nullptr);
             onError = std::exchange(other.onError, nullptr);
             onReceived = std::exchange(other.onReceived, nullptr);
+            stats = std::move(other.stats);
         }
         return *this;
     }
@@ -626,11 +633,22 @@ namespace wspp {
 
     void WebSocket::close() {
         if(s.fd >= 0) {
+            auto emptyBuffers = [this] () {
+                uint8_t buffer[1024];
+                while(true) {
+                    ssize_t n = read(buffer, 1024);
+                    if(n <= 0)
+                        break;
+                }
+            };
+
         #ifdef _WIN32
-            ::shutdown(socket_fd, SD_BOTH);
+            ::shutdown(s.fd, SD_SEND);
+            emptyBuffers();
             closesocket(s.fd);
         #else
-            ::shutdown(s.fd, SHUT_RDWR);
+            ::shutdown(s.fd, SHUT_WR);
+            emptyBuffers();
             ::close(s.fd);
         #endif
             s.fd = -1;
@@ -822,23 +840,29 @@ namespace wspp {
     }
 
     ssize_t WebSocket::read(void *buffer, size_t size) {
+        ssize_t n = 0;
         if(ssl)
-            return SSL_read(ssl, buffer, size);
+            n = SSL_read(ssl, buffer, size);
     #ifdef _WIN32
-        return ::recv(s.fd, (char*)buffer, size, 0);
+        n = ::recv(s.fd, (char*)buffer, size, 0);
     #else
-        return ::recv(s.fd, buffer, size, 0);
+        n = ::recv(s.fd, buffer, size, 0);
     #endif
+        stats.bytesRead += n;
+        return n;
     }
 
     ssize_t WebSocket::write(const void *buffer, size_t size) {
+        ssize_t n = 0;
         if(ssl)
-            return SSL_write(ssl, buffer, size);
+            n = SSL_write(ssl, buffer, size);
     #ifdef _WIN32
-        return ::send(s.fd, (char*)data, size, 0);
+        n = ::send(s.fd, (char*)data, size, 0);
     #else
-        return ::send(s.fd, buffer, size, 0);
+        n = ::send(s.fd, buffer, size, 0);
     #endif
+        stats.bytesWritten += n;
+        return n;
     }
 
     ssize_t WebSocket::peek(void *buffer, size_t size) {

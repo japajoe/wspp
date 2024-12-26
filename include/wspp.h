@@ -163,6 +163,11 @@ namespace wspp {
     class WebSocket;
     using MessageReceivedCallback = std::function<void(const WebSocket *socket, Message &message)>;
 
+    struct NetworkStats {
+        uint64_t bytesWritten;
+        uint64_t bytesRead;
+    };
+
     class WebSocket {
     public:
         ErrorCallback onError;
@@ -186,10 +191,12 @@ namespace wspp {
         Result receive();
         int32_t getFileDescriptor() const { return s.fd; }
         bool isSet() const { return s.fd >= 0; }
+        NetworkStats getStatistics() const { return stats; }
     private:
         socket_t s;
         SSL_CTX *sslContext;
         SSL *ssl;
+        NetworkStats stats;
         ssize_t read(void *buffer, size_t size);
         ssize_t write(const void *buffer, size_t size);
         ssize_t peek(void *buffer, size_t size);
