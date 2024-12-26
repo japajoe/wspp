@@ -37,8 +37,6 @@ int main(int argc, char **argv) {
 
 void onConnected(WebClient *client) {
     std::cout << "Connected to server\n";
-    std::string request = R"({ "method": "subscribeNewToken" })";
-    client->send(OpCode::Text, request.c_str(), request.size());
 }
 
 void onDisconnected(WebClient *client) {
