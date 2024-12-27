@@ -843,24 +843,28 @@ namespace wspp {
         ssize_t n = 0;
         if(ssl)
             n = SSL_read(ssl, buffer, size);
+        else {
     #ifdef _WIN32
         n = ::recv(s.fd, (char*)buffer, size, 0);
     #else
         n = ::recv(s.fd, buffer, size, 0);
     #endif
+        }
         stats.bytesRead += n;
         return n;
     }
 
     ssize_t WebSocket::write(const void *buffer, size_t size) {
         ssize_t n = 0;
-        if(ssl)
+        if(ssl){
             n = SSL_write(ssl, buffer, size);
+        } else {
     #ifdef _WIN32
         n = ::send(s.fd, (char*)data, size, 0);
     #else
         n = ::send(s.fd, buffer, size, 0);
     #endif
+        }
         stats.bytesWritten += n;
         return n;
     }
