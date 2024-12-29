@@ -115,8 +115,14 @@ namespace wspp {
         
         clients.resize(config.maxClients);
 
-        if(config.certificatePath.size() > 0 && config.privateKeyPath.size() > 0)
-            listener = WebSocket(AddressFamily::AFInet, config.certificatePath, config.privateKeyPath);
+        if(config.certificatePath.size() > 0 && config.privateKeyPath.size() > 0) {
+            try {
+                listener = WebSocket(AddressFamily::AFInet, config.certificatePath, config.privateKeyPath);
+            } catch(const std::invalid_argument &ex) {
+                std::cout << ex.what() << '\n';
+                return false;
+            }
+        }
 
         if(!listener.bind(config.bindAddress, config.port))
             return false;
@@ -144,6 +150,15 @@ namespace wspp {
         }
 
         broadcast(OpCode::Close, nullptr, 0);
+
+        double countDown = 5.0;
+
+        while(countDown > 0.0) {
+            timer.update();
+            countDown -= timer.getDeltaTime();
+            getMessages();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
 
         listener.close();
 

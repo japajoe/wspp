@@ -116,6 +116,15 @@ namespace wspp {
 
         send(OpCode::Close, nullptr, 0);
 
+        double countDown = 5.0;
+
+        while(countDown > 0.0) {
+            timer.update();
+            countDown -= timer.getDeltaTime();
+            getMessages();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
         connection.close();
 
         return true;

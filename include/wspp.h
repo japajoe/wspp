@@ -168,6 +168,12 @@ namespace wspp {
         uint64_t bytesRead;
     };
 
+    enum class ConnectionState {
+        Connected,
+        Disconnected,
+        Disconnecting
+    };
+
     class WebSocket {
     public:
         ErrorCallback onError;
@@ -196,6 +202,7 @@ namespace wspp {
         socket_t s;
         SSL_CTX *sslContext;
         SSL *ssl;
+        ConnectionState connectionState;
         NetworkStats stats;
         ssize_t read(void *buffer, size_t size);
         ssize_t write(const void *buffer, size_t size);

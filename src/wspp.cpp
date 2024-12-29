@@ -153,6 +153,7 @@ namespace wspp {
         ssl = nullptr;
         onError = nullptr;
         onReceived = nullptr;
+        connectionState = ConnectionState::Disconnected;
         memset(&stats, 0, sizeof(NetworkStats));
     }
 
@@ -164,6 +165,7 @@ namespace wspp {
         ssl = nullptr;
         onError = nullptr;
         onReceived = nullptr;
+        connectionState = ConnectionState::Disconnected;
         memset(&stats, 0, sizeof(NetworkStats));
     }
 
@@ -175,6 +177,7 @@ namespace wspp {
         ssl = nullptr;
         onError = nullptr;
         onReceived = nullptr;
+        connectionState = ConnectionState::Disconnected;
         memset(&stats, 0, sizeof(NetworkStats));
 
         sslContext = SSL_CTX_new(TLS_server_method());
@@ -183,18 +186,21 @@ namespace wspp {
             if (SSL_CTX_use_certificate_file(sslContext, certificatePath.c_str(), SSL_FILETYPE_PEM) <= 0) {
                 SSL_CTX_free(sslContext);
                 sslContext = nullptr;
+                throw std::invalid_argument("SSL_CTX_use_certificate_file failed");
                 return;
             }
 
             if (SSL_CTX_use_PrivateKey_file(sslContext, privateKeyPath.c_str(), SSL_FILETYPE_PEM) <= 0) {
                 SSL_CTX_free(sslContext);
                 sslContext = nullptr;
+                throw std::invalid_argument("SSL_CTX_use_PrivateKey_file failed");
                 return;
             }
 
             if (!SSL_CTX_check_private_key(sslContext)) {
                 SSL_CTX_free(sslContext);
                 sslContext = nullptr;
+                throw std::invalid_argument("SSL_CTX_check_private_key failed");
             }
         }
     }
@@ -207,6 +213,7 @@ namespace wspp {
         onError = other.onError;
         onReceived = other.onReceived;
         stats = other.stats;
+        connectionState = other.connectionState;
     }
 
     WebSocket::WebSocket(WebSocket &&other) noexcept {
@@ -217,6 +224,7 @@ namespace wspp {
         onError = std::exchange(other.onError, nullptr);
         onReceived = std::exchange(other.onReceived, nullptr);
         stats = std::move(other.stats);
+        connectionState = std::exchange(other.connectionState, ConnectionState::Disconnected);
     }
 
     WebSocket::~WebSocket() {
@@ -230,6 +238,7 @@ namespace wspp {
             ssl = other.ssl;
             onError = other.onError;
             onReceived = other.onReceived;
+            connectionState = other.connectionState;
             stats = other.stats;
         }
         return *this;
@@ -243,6 +252,7 @@ namespace wspp {
             ssl = std::exchange(other.ssl, nullptr);
             onError = std::exchange(other.onError, nullptr);
             onReceived = std::exchange(other.onReceived, nullptr);
+            connectionState = std::exchange(other.connectionState, ConnectionState::Disconnected);
             stats = std::move(other.stats);
         }
         return *this;
@@ -315,7 +325,13 @@ namespace wspp {
             writeError("WebSocket::listen: failed to listen because socket isn't initialized");
             return false;
         }
-        return ::listen(s.fd, backlog) == 0;
+
+        int32_t result = ::listen(s.fd, backlog);
+
+        if(result == 0)
+            connectionState = ConnectionState::Connected;
+
+        return result == 0;
     }
 
     bool WebSocket::accept(WebSocket &client) {
@@ -463,6 +479,8 @@ namespace wspp {
             client.close();
             return false;
         }
+
+        client.connectionState = ConnectionState::Connected;
         
         return true;
     }
@@ -628,6 +646,8 @@ namespace wspp {
         int noDelayFlag = 1;
         setOption(IPPROTO_TCP, TCP_NODELAY, (char *)&noDelayFlag, sizeof(int));
 
+        connectionState = ConnectionState::Connected;
+
         return true;
     }
 
@@ -664,6 +684,8 @@ namespace wspp {
             SSL_CTX_free(sslContext);
             sslContext = nullptr;
         }
+
+        connectionState = ConnectionState::Disconnected;
     }
 
     bool WebSocket::setOption(int level, int option, const void *value, uint32_t valueSize) {
@@ -788,10 +810,25 @@ namespace wspp {
                     break;
                 }
                 case OpCode::Close: {
+                    if(connectionState != ConnectionState::Disconnecting) {
+                        connectionState = ConnectionState::Disconnecting;
+                        
+                        //Close frames might contain a 2 byte status code
+                        //In case of receiving a status code, we must echo it with the response
+                        if(frame.payload.size() >= 2) {
+                            writeFrame(OpCode::Close, true, &frame.payload[0], 2, !frame.masked);
+                        } else {
+                            writeFrame(OpCode::Close, true, nullptr, 0, !frame.masked);
+                        }
+                    }
                     break;
                 }
                 case OpCode::Ping: {
-                    writeFrame(OpCode::Pong, true, nullptr, 0, true);
+                    //If frame was masked, it means a client sent it
+                    //Only servers are supposed to send ping messages
+                    //Clients need to respond with a pong
+                    if(!frame.masked)
+                        writeFrame(OpCode::Pong, true, nullptr, 0, true);
                     break;
                 }
                 case OpCode::Pong: {
@@ -845,9 +882,9 @@ namespace wspp {
             n = SSL_read(ssl, buffer, size);
         else {
     #ifdef _WIN32
-        n = ::recv(s.fd, (char*)buffer, size, 0);
+            n = ::recv(s.fd, (char*)buffer, size, 0);
     #else
-        n = ::recv(s.fd, buffer, size, 0);
+            n = ::recv(s.fd, buffer, size, 0);
     #endif
         }
         stats.bytesRead += n;
@@ -860,9 +897,9 @@ namespace wspp {
             n = SSL_write(ssl, buffer, size);
         } else {
     #ifdef _WIN32
-        n = ::send(s.fd, (char*)data, size, 0);
+            n = ::send(s.fd, (char*)data, size, 0);
     #else
-        n = ::send(s.fd, buffer, size, 0);
+            n = ::send(s.fd, buffer, size, 0);
     #endif
         }
         stats.bytesWritten += n;
